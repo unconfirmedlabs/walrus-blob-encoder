@@ -427,36 +427,43 @@ unsafe impl Kernel for Gfni {
 fn affine_table() -> &'static AffineTable {
     static TABLE: OnceLock<Box<AffineTable>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let mul128 = tables::get_mul128();
+        let tables::ExpLog { exp, log } = tables::get_exp_log();
         let mut table: Box<AffineTable> = vec![[0; 4]; GF_ORDER]
             .into_boxed_slice()
             .try_into()
             .expect("GF_ORDER entries");
-        for (matrices, lut) in zip(table.iter_mut(), mul128.iter()) {
-            *matrices = affine_matrices(lut);
+        for (log_m, matrices) in zip(0.., table.iter_mut()) {
+            let products = core::array::from_fn(|j| tables::mul(1 << j, log_m, exp, log));
+            *matrices = affine_matrices(&products);
         }
         table
     })
 }
 
-/// The matrices of the multiplication whose nibble tables are `lut`.
-fn affine_matrices(lut: &Multiply128lutT) -> [u64; 4] {
-    // The product of input bit `j`: nibble table `j / 4` at index `1 << (j % 4)`.
-    let product = |j: usize| {
-        let byte = |table: u128| (table >> (8 * (1 << (j % 4)))) as u8;
-        u16::from_le_bytes([byte(lut.lo[j / 4]), byte(lut.hi[j / 4])])
-    };
-    let products: [u16; 16] = core::array::from_fn(product);
-    // Row `i` of a matrix sits in byte `7 - i`; its bit `j` maps input bit `j` to output bit `i`.
+/// The matrices of the multiplication that maps input bit `j` to `products[j]`.
+fn affine_matrices(products: &[GfElement; 16]) -> [u64; 4] {
+    // Byte `j` of the transpose's input is the output byte of input bit `j`; the transpose puts
+    // output bit `i` in byte `i`, and `vgf2p8affineqb` wants it in byte `7 - i`.
     let matrix = |input: usize, output: usize| {
-        (0..8).fold(0u64, |matrix, i| {
-            let row = (0..8).fold(0u8, |row, j| {
-                row | ((((products[8 * input + j] >> (8 * output + i)) & 1) as u8) << j)
-            });
-            matrix | u64::from(row) << (8 * (7 - i))
-        })
+        let columns = (0..8).fold(0u64, |columns, j| {
+            columns | u64::from(products[8 * input + j] >> (8 * output) & 0xff) << (8 * j)
+        });
+        transpose(columns).swap_bytes()
     };
     [matrix(0, 0), matrix(1, 1), matrix(1, 0), matrix(0, 1)]
+}
+
+/// Transposes the 8x8 bit matrix whose row `r` is byte `r`.
+fn transpose(mut x: u64) -> u64 {
+    for (shift, mask) in [
+        (7, 0x00aa_00aa_00aa_00aa),
+        (14, 0x0000_cccc_0000_cccc),
+        (28, 0x0000_0000_f0f0_f0f0),
+    ] {
+        let t = (x ^ (x >> shift)) & mask;
+        x ^= t ^ (t << shift);
+    }
+    x
 }
 
 #[inline(always)]
