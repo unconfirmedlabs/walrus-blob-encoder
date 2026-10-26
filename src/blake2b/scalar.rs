@@ -3,13 +3,11 @@
 
 //! Portable BLAKE2b, one message at a time.
 
-use super::{Block, Digest, H0, IV, Lanes, SIGMA, digest};
+use super::{Block, Digest, H0, IV, Lanes, SIGMA, digest, for_each_group};
 
 pub(super) fn hash_batch(prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
     let mut lanes = Lanes::<1>::new(prefix, messages[0].len());
-    for (message, out) in messages.iter().zip(out) {
-        *out = hash(&mut lanes, message);
-    }
+    for_each_group(messages, out, |&[message]| [hash(&mut lanes, message)]);
 }
 
 fn hash(lanes: &mut Lanes<1>, message: &[u8]) -> Digest {

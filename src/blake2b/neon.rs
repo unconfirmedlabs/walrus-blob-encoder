@@ -18,15 +18,14 @@ const LANES: usize = 2;
 
 pub(super) fn hash_batch(hasher: Hasher, prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
     assert_eq!(hasher.backend(), Backend::Neon);
-    // SAFETY: a `Hasher` only holds available backends, and this one requires NEON.
-    unsafe { hash_batch_unchecked(prefix, messages, out) }
+    // SAFETY: a `Hasher` only holds available backends, so NEON is enabled at compile time or
+    // was detected on the running CPU.
+    unsafe { kernel(prefix, messages, out) }
 }
 
-/// # Safety
-///
-/// The CPU must support NEON. `messages` must be non-empty, of equal lengths and as many as `out`.
+/// `messages` must be non-empty, of equal lengths and as many as `out`.
 #[target_feature(enable = "neon")]
-unsafe fn hash_batch_unchecked(prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
+fn kernel(prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
     let mut lanes = Lanes::<LANES>::new(prefix, messages[0].len());
     for_each_group(messages, out, |group| hash_group(&mut lanes, group));
 }

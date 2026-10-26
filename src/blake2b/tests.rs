@@ -177,6 +177,29 @@ fn backend_selection() {
     assert!(!Backend::Neon.is_available());
 }
 
+#[test]
+fn compile_time_backends() {
+    for &backend in Backend::ALL {
+        if backend.is_enabled_statically() {
+            assert!(backend.is_available(), "{backend}");
+        }
+        #[cfg(not(feature = "runtime-detection"))]
+        assert_eq!(
+            backend.is_available(),
+            backend.is_enabled_statically(),
+            "{backend}"
+        );
+    }
+    let fastest_static = Backend::ALL
+        .iter()
+        .copied()
+        .find(|backend| backend.is_enabled_statically())
+        .expect("scalar is always enabled");
+    if !cfg!(feature = "runtime-detection") || fastest_static == Backend::ALL[0] {
+        assert_eq!(Backend::detect(), fastest_static);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: if cfg!(miri) { 4 } else { 256 },

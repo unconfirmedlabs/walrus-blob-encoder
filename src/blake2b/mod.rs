@@ -1,25 +1,50 @@
 // Copyright (c) Unconfirmed Labs, LLC
 // SPDX-License-Identifier: Apache-2.0
 
-//! Multi-buffer BLAKE2b-256 (RFC 7693) with runtime-selected SIMD backends.
+//! Multi-buffer BLAKE2b-256 (RFC 7693) with SIMD backends.
 //!
 //! Every backend hashes `prefix || message` for a batch of equal-length messages, several
 //! messages at a time, one message per SIMD lane.
+//!
+//! A backend whose target features are enabled at compile time is called directly. With the
+//! `runtime-detection` feature, faster backends are compiled in as well and used when the
+//! running CPU supports them; without it, no CPU detection is compiled at all.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    any(feature = "runtime-detection", target_feature = "avx2")
+))]
 mod avx2;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        feature = "runtime-detection",
+        all(
+            target_feature = "avx2",
+            target_feature = "avx512f",
+            target_feature = "avx512bw"
+        )
+    )
+))]
 mod avx512;
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[cfg(all(
+    target_arch = "aarch64",
+    target_endian = "little",
+    any(feature = "runtime-detection", target_feature = "neon")
+))]
 mod neon;
 mod scalar;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    any(feature = "runtime-detection", target_feature = "sse4.1")
+))]
 mod sse41;
 #[cfg(test)]
 mod tests;
 
 use core::fmt;
 use core::str::FromStr;
+#[cfg(feature = "runtime-detection")]
 use std::sync::OnceLock;
 
 pub(crate) const DIGEST_LEN: usize = 32;
@@ -86,23 +111,63 @@ impl Backend {
         Backend::Scalar,
     ];
 
-    /// The fastest backend available on the running CPU, detected once per process.
+    /// The fastest available backend (see [`Backend::is_available`]). With the
+    /// `runtime-detection` feature it is detected once per process, unless the fastest backend
+    /// for the target is enabled at compile time; without it, it is a compile-time constant.
     pub fn detect() -> Backend {
-        static DETECTED: OnceLock<Backend> = OnceLock::new();
-        *DETECTED.get_or_init(|| {
-            Self::ALL
-                .iter()
-                .copied()
-                .find(|backend| backend.is_available())
-                .unwrap_or(Backend::Scalar)
-        })
+        #[cfg(feature = "runtime-detection")]
+        {
+            static DETECTED: OnceLock<Backend> = OnceLock::new();
+            *DETECTED.get_or_init(Self::fastest_available)
+        }
+        #[cfg(not(feature = "runtime-detection"))]
+        Self::fastest_available()
     }
 
-    /// Whether the running CPU supports this backend. Always `false` for backends of other
-    /// architectures.
+    fn fastest_available() -> Backend {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|backend| backend.is_available())
+            .unwrap_or(Backend::Scalar)
+    }
+
+    /// Whether this backend can run: its target features are enabled at compile time or, with
+    /// the `runtime-detection` feature, the running CPU supports them. Always `false` for
+    /// backends of other architectures.
     pub fn is_available(self) -> bool {
+        #[cfg(feature = "runtime-detection")]
+        {
+            self.is_enabled_statically() || self.is_detected()
+        }
+        #[cfg(not(feature = "runtime-detection"))]
+        self.is_enabled_statically()
+    }
+
+    /// Whether the target features of this backend are enabled at compile time.
+    const fn is_enabled_statically(self) -> bool {
         match self {
             Backend::Scalar => true,
+            Backend::Avx2 => cfg!(all(target_arch = "x86_64", target_feature = "avx2")),
+            Backend::Avx512 => cfg!(all(
+                target_arch = "x86_64",
+                target_feature = "avx2",
+                target_feature = "avx512f",
+                target_feature = "avx512bw"
+            )),
+            Backend::Neon => cfg!(all(
+                target_arch = "aarch64",
+                target_endian = "little",
+                target_feature = "neon"
+            )),
+            Backend::Sse41 => cfg!(all(target_arch = "x86_64", target_feature = "sse4.1")),
+        }
+    }
+
+    /// Whether the running CPU supports this backend.
+    #[cfg(feature = "runtime-detection")]
+    fn is_detected(self) -> bool {
+        match self {
             #[cfg(target_arch = "x86_64")]
             Backend::Avx2 => std::is_x86_feature_detected!("avx2"),
             #[cfg(target_arch = "x86_64")]
@@ -168,7 +233,7 @@ impl fmt::Display for ParseBackendError {
 
 impl std::error::Error for ParseBackendError {}
 
-/// Proof that `backend` is available on the running CPU. Only constructible through [`Hasher::new`].
+/// Proof that `backend` is available (see [`Backend::is_available`]). Only constructible through [`Hasher::new`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Hasher {
     backend: Backend,
@@ -200,13 +265,33 @@ impl Hasher {
         );
         match self.backend {
             Backend::Scalar => scalar::hash_batch(prefix, messages, out),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(
+                target_arch = "x86_64",
+                any(feature = "runtime-detection", target_feature = "avx2")
+            ))]
             Backend::Avx2 => avx2::hash_batch(self, prefix, messages, out),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(
+                target_arch = "x86_64",
+                any(
+                    feature = "runtime-detection",
+                    all(
+                        target_feature = "avx2",
+                        target_feature = "avx512f",
+                        target_feature = "avx512bw"
+                    )
+                )
+            ))]
             Backend::Avx512 => avx512::hash_batch(self, prefix, messages, out),
-            #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+            #[cfg(all(
+                target_arch = "aarch64",
+                target_endian = "little",
+                any(feature = "runtime-detection", target_feature = "neon")
+            ))]
             Backend::Neon => neon::hash_batch(self, prefix, messages, out),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(
+                target_arch = "x86_64",
+                any(feature = "runtime-detection", target_feature = "sse4.1")
+            ))]
             Backend::Sse41 => sse41::hash_batch(self, prefix, messages, out),
             _ => unreachable!("a Hasher only holds available backends"),
         }

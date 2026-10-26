@@ -21,20 +21,16 @@ const LANES: usize = 8;
 
 pub(super) fn hash_batch(hasher: Hasher, prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
     assert_eq!(hasher.backend(), Backend::Avx512);
-    // SAFETY: a `Hasher` only holds available backends, and AVX-512 availability includes
-    // AVX-512F, AVX-512BW and AVX2.
-    unsafe { hash_batch_unchecked(prefix, messages, out) }
+    // SAFETY: a `Hasher` only holds available backends, so AVX-512F, AVX-512BW and AVX2 is enabled at compile time or
+    // was detected on the running CPU.
+    unsafe { kernel(prefix, messages, out) }
 }
 
 /// Hashes groups of eight; a remainder of at most four goes to the AVX2 kernel, which is cheaper
-/// than a padded group of eight.
-///
-/// # Safety
-///
-/// The CPU must support AVX-512F, AVX-512BW and AVX2. `messages` must be non-empty,
-/// of equal lengths and as many as `out`.
+/// than a padded group of eight. `messages` must be non-empty, of equal lengths and as many as
+/// `out`.
 #[target_feature(enable = "avx2,avx512f,avx512bw")]
-unsafe fn hash_batch_unchecked(prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
+fn kernel(prefix: u8, messages: &[&[u8]], out: &mut [Digest]) {
     let remainder = messages.len() % LANES;
     let split = if remainder <= avx2::LANES {
         messages.len() - remainder
@@ -49,9 +45,7 @@ unsafe fn hash_batch_unchecked(prefix: u8, messages: &[&[u8]], out: &mut [Digest
         for_each_group(messages, out, |group| hash_group(geometry, prefix, group));
     }
     if !rest.is_empty() {
-        // SAFETY: the caller guarantees AVX2; `rest` is non-empty, of equal lengths and as many
-        // as `out_rest`.
-        unsafe { avx2::hash_batch_unchecked(prefix, rest, out_rest) };
+        avx2::kernel(prefix, rest, out_rest);
     }
 }
 
