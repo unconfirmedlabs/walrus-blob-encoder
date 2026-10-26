@@ -80,17 +80,73 @@ per SIMD lane:
 | `neon` | AArch64 | 2 |
 | `scalar` | any | 1 |
 
-The backend is chosen at runtime by CPU feature detection, never by compile-time target
-features, so a build with `-C target-cpu=x86-64` still uses AVX-512 where the CPU has it.
-`Backend::detect` returns the fastest available backend and `BlobEncoder::with_backend` forces
-one, failing with `Error::UnsupportedBackend` if the CPU lacks it.
+### Dispatch policy: static first, detection opt-in
+
+A backend whose target features are enabled at compile time (`-C target-cpu` or
+`-C target-feature`) is always available and is called without any CPU detection. The
+`runtime-detection` cargo feature, on by default, additionally compiles the faster backends and
+picks them at runtime when the CPU has them. Without the feature the build contains no CPU
+detection at all, and the backend is fixed when the crate is compiled.
+
+BLAKE2b backend by build target:
+
+| target | static backend | with `runtime-detection` (default) | `default-features = false` |
+|---|---|---|---|
+| `x86-64` (baseline, SSE2) | scalar | avx512, avx2 or sse41 if detected, else scalar | scalar |
+| `x86-64-v2` | sse41 | avx512 or avx2 if detected, else sse41 | sse41 |
+| `x86-64-v3` | avx2 | avx512 if detected, else avx2 | avx2 |
+| `x86-64-v4` | avx512 | avx512, no detection runs | avx512 |
+| `x86-64-v4` + `gfni` | avx512 | avx512, no detection runs | avx512, recommended for AVX-512 hosts |
+| AArch64 | neon | neon, no detection runs | neon |
+| other | scalar | scalar | scalar |
+
+`Backend::is_available` is true for the backends enabled at compile time and, with the
+feature, for those the running CPU supports. `Backend::detect` returns the fastest available
+backend: with the feature it is detected once per process (unless the fastest backend is
+already enabled at compile time); without it, it is a compile-time constant.
+`BlobEncoder::with_backend` forces a backend and fails with `Error::UnsupportedBackend` if it
+is not available.
+
+Each SIMD kernel is a `#[target_feature]` function. Stable Rust still requires `unsafe` to call
+one when the features are only enabled for the whole build (error E0133), so every backend has
+exactly one `unsafe` call into its kernel. In a static build it is justified by the
+compile-time configuration, and no detection code exists in the binary; with detection, by
+the CPU check that made the backend available.
+
+The feature is on by default because a plain `x86-64` build without it can only use the scalar
+backend and the portable Reed-Solomon engine, several times slower (BLAKE2b alone is about 5x
+slower than AVX-512 and 3x slower than AVX2), and most builds of a library target that
+baseline. Builds for a known CPU, such as an enclave image, should set
+the CPU level and turn detection off, so that the code that runs is the code that was
+compiled:
+
+```toml
+[dependencies]
+walrus-blob-encoder = { git = "...", rev = "<commit>", default-features = false }
+```
+
+```sh
+RUSTFLAGS="-C target-cpu=x86-64-v4 -C target-feature=+gfni" cargo build --release
+```
+
+GFNI is not part of `x86-64-v4` but is used by the AVX-512 Reed-Solomon engine, hence the extra
+target feature. Such a binary needs a CPU with every compiled feature (here AVX-512 F, BW, CD,
+DQ and VL plus GFNI, as on Ice Lake and later Xeons and on Zen 4) and stops with an illegal
+instruction on others.
 
 Reed-Solomon encoding uses [reed-solomon-simd](https://crates.io/crates/reed-solomon-simd)
-`=3.1.0`, which detects its own AVX2, SSSE3 or NEON engine at runtime, independently of the
-BLAKE2b backend. `Backend::Scalar` is the exception: it also selects the portable Reed-Solomon
-engine, giving a path without explicit SIMD code.
+`=3.1.0` and follows the same policy, independently of the BLAKE2b backend:
 
 <!-- RS-AVX512 -->
+
+- an AVX-512 engine when AVX-512 is enabled at compile time;
+- otherwise reed-solomon-simd's AVX2, SSSE3 or NEON engine when its features are enabled at
+  compile time;
+- otherwise, with `runtime-detection`, reed-solomon-simd's `DefaultEngine`, which detects its
+  engine at runtime;
+- otherwise its portable `NoSimd` engine.
+
+`Backend::Scalar` always selects the portable engine, giving a path without explicit SIMD code.
 
 The output is identical for every backend and thread count.
 
@@ -179,10 +235,12 @@ cargo bench --bench encoder -- 'blob_id/17MB/(walrus-core|avx2)'
   batch sizes, symbol sizes and overlapping messages, plus a proptest; the Merkle trees against
   a direct construction; the Reed-Solomon engines against each other.
 - Miri runs the BLAKE2b tests on the scalar backend.
-- CI runs fmt, clippy and rustdoc with warnings denied on x86-64 and AArch64, the tests with
-  each backend forced where the runner's CPU has it (x86-64: avx512, avx2, sse41, scalar;
-  AArch64: neon, scalar) and with detection, Miri, and cargo-deny for advisories, licenses,
-  duplicate versions and sources.
+- CI runs fmt, clippy and rustdoc with warnings denied on x86-64 and AArch64, with and without
+  default features; the tests with each backend forced where the runner's CPU has it (x86-64:
+  avx512, avx2, sse41, scalar; AArch64: neon, scalar) and with detection; the tests of
+  static builds (`x86-64-v4` where the runner has AVX-512, `x86-64-v3` and the baseline without
+  default features); Miri; and cargo-deny for advisories, licenses, duplicate versions and
+  sources.
 
 ## License
 
