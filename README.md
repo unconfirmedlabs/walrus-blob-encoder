@@ -248,6 +248,18 @@ cargo bench --bench encoder -- 'blob_id/17MB/(walrus-core|avx2)'
   default features); Miri; and cargo-deny for advisories, licenses, duplicate versions and
   sources.
 
+On a shared host, serialize the test configurations while preserving every backend and
+1/2/3/8-thread case:
+
+```sh
+CARGO_BUILD_JOBS=8 RAYON_NUM_THREADS=8 RUST_TEST_THREADS=1 WALRUS_BLOB_ENCODER_SERIAL_TESTS=1 \
+  cargo test --release --locked -- --include-ignored
+```
+
+The serial mode creates only one dedicated pool at a time. Leave
+`WALRUS_BLOB_ENCODER_BACKEND` unset for the default run, or set it to an available backend
+name to run the same suite with that backend forced.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE). The dependencies are rayon (MIT OR Apache-2.0) and

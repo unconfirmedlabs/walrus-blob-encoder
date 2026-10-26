@@ -65,9 +65,36 @@ fn run_concurrently(
     });
 }
 
+/// Uses one pool at a time on resource-constrained hosts, preserving every test case.
+fn run_serial(n_shards: u16, threads: &[usize], check: &impl Fn(&str, &BlobEncoder)) -> bool {
+    if std::env::var_os("WALRUS_BLOB_ENCODER_SERIAL_TESTS").is_none() {
+        return false;
+    }
+    for &threads in threads {
+        let pool = Arc::new(
+            ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap(),
+        );
+        for backend in backends() {
+            let (label, encoder) = encoder(n_shards, backend, &pool);
+            check(&label, &encoder);
+        }
+    }
+    true
+}
+
 /// Runs `check` concurrently with an encoder for every backend under test. Successive `case`
 /// numbers rotate through the thread counts, so every test covers all of them.
 pub fn for_each_backend(n_shards: u16, case: usize, check: impl Fn(&str, &BlobEncoder) + Sync) {
+    if run_serial(
+        n_shards,
+        &[THREAD_COUNTS[case % THREAD_COUNTS.len()]],
+        &check,
+    ) {
+        return;
+    }
     let pool = &pools()[case % THREAD_COUNTS.len()];
     let encoders = backends()
         .into_iter()
@@ -78,6 +105,9 @@ pub fn for_each_backend(n_shards: u16, case: usize, check: impl Fn(&str, &BlobEn
 
 /// Runs `check` concurrently with an encoder for every backend under test and thread count.
 pub fn for_each_backend_and_pool(n_shards: u16, check: impl Fn(&str, &BlobEncoder) + Sync) {
+    if run_serial(n_shards, &THREAD_COUNTS, &check) {
+        return;
+    }
     let encoders = backends()
         .into_iter()
         .flat_map(|backend| {
