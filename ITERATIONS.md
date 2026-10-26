@@ -98,7 +98,8 @@ There is no retained encoder optimization. After reverting the experiments, the
 release benchmark executable was byte-identical to the saved baseline:
 SHA-256 `352f85bde55ce87a7944f26ddb03b0f211f1d148230003124fda27f0939f0997`.
 The accepted library performance delta is therefore zero; fresh wall times on the
-replacement instance also serve as the comparison point for iteration 2.
+replacement instance are recorded in row 1. Iteration 2 was rebaselined again after
+the second Spot interruption.
 
 259209074-byte input, fresh process, AVX2, four threads, `/usr/bin/time -v`:
 shared-devbox baseline 426732 KiB; isolated baseline 427500 KiB; rejected packed
@@ -121,7 +122,9 @@ Passed on the replacement instance:
 - cargo-deny 0.20.2: advisories, bans, licenses, and sources all passed.
 
 The optional real-file test was not configured; the high-entropy suite was run.
-GitHub CI, including the ARM runner, is pending.
+All 18 GitHub CI checks passed, including the ARM/NEON runner, before PR #2 was merged.
+The AVX-512 runtime job reported that the runner lacked AVX-512; the local v4+GFNI
+compile gate passed as described below.
 
 The native v4 command failed in the **num-traits host build script** with SIGILL,
 not in encoder code: Cargo applied the unsupported target features to executable
@@ -137,9 +140,112 @@ RUSTFLAGS="-C target-cpu=x86-64-v4 -C target-feature=+gfni" \
 
 None: no retained encoder, AVX-512, or GFNI changes.
 
-## Iteration 2
+## Iteration 2 — kernels
 
-Pending iteration 1 merge.
+Base: `1df04e6`, after PR #2 merged with green CI. The second Spot instance was
+also reclaimed. The user approved an On-Demand c6a.2xlarge at $0.306/hour under the
+original $5 total budget and shutdown deadline. Both the accepted baseline and
+candidate are remeasured on that same On-Demand instance with the same input bytes.
+
+### Hypothesis and profile evidence
+
+Fresh software `perf` sampling at 499 Hz on the accepted baseline, 0.7 and 259 MB,
+one and four threads, two repeats per case: AVX2 spends about 51.85% of sampled
+CPU time in its BLAKE2b kernel and 27.84% in RS FFT/IFFT; SSE4.1 spends about 65.97%
+in its BLAKE2b kernel. Scalar spends about 77.64% in NoSimd FFT/IFFT and 19.91% in
+hashing. Hardware cycle counters are unavailable. The phase decomposition and
+allocation/barrier limitations from iteration 1 still apply to this identical
+encoder implementation.
+
+### Rejected: 64-byte message specialization
+
+Merkle inner nodes hash 64 bytes plus a one-byte domain prefix. The resulting
+65-byte block occupies nine words; the last seven words are always zero. A
+length-guarded specialization made those zeros visible to the compiler in scalar,
+AVX2, SSE4.1, NEON, and AVX-512. Other lengths retained the generic path.
+
+All local correctness gates passed, including Miri and the v4+GFNI compile. Existing
+RustCrypto tests cover 63/64/65-byte boundaries, prefixes 0/1/255, scattered unaligned
+messages, counts through 33, full Merkle levels, and ragged SIMD groups.
+
+However, the prescribed two best-of-five runs failed the performance gate. Deltas
+below are elapsed time (negative is faster), ordered 0.7 / 17 / 70 / 259 MB:
+
+| Backend / threads | Rejected specialization delta |
+|---|---|
+| avx2 ×1 | -4.0% / -3.9% / +3.1% / +2.8% |
+| avx2 ×4 | -3.8% / -4.8% / +1.0% / -0.4% |
+| sse41 ×1 | -1.0% / -1.5% / +0.3% / -0.4% |
+| sse41 ×4 | -1.2% / -1.1% / +4.0% / +1.3% |
+| scalar ×1 | -1.2% / -1.2% / +0.1% / +0.1% |
+| scalar ×4 | -1.8% / -1.8% / -0.7% / +0.0% |
+
+AVX2 ×1 regressed 3.1% at 70 MB and 2.8% at 259 MB; SSE4.1 ×4 regressed 4.0% at
+70 MB. The early focused trial's small-input win did not generalize. The entire
+specialization was reverted. Peak RSS was 427308 KiB; no memory improvement.
+
+### Rejected: reuse rotation masks
+
+AVX2 and SSE4.1 deliberately obscure the 16-bit byte-shuffle mask with `black_box`
+to avoid LLVM rewriting one shuffle into two instructions. That operation occurred
+once per compression block. Constructing both masks once per equal-length batch
+may remove repeated mask setup without duplicating the compression kernels. The
+round function, mask values, loads, padding, and counters remain unchanged. NEON
+and AVX-512 use rotate instructions rather than these masks; scalar is unchanged.
+
+The ten focused hash-reference tests passed. A best-of-three screening run produced
+the following deltas against the fresh baseline (same size order as above):
+
+| Backend / threads | Rejected rotation-mask trial delta |
+|---|---|
+| avx2 ×1 | +0.0% / +0.0% / -0.5% / +1.1% |
+| avx2 ×4 | +0.0% / -1.6% / -3.8% / -0.7% |
+| sse41 ×1 | +1.6% / +1.2% / +0.3% / +0.9% |
+| sse41 ×4 | +1.2% / +5.7% / +1.3% / +1.5% |
+| scalar ×1 | +0.5% / +0.1% / +0.1% / +0.2% |
+| scalar ×4 | +0.0% / -0.3% / -0.7% / +0.1% |
+
+SSE4.1 ×4 regressed 5.7% at 17 MB; most AVX2 cases changed less than 2%.
+The isolated 70 MB/four-thread AVX2 improvement did not justify retaining the
+cross-backend regression. Both backend edits were reverted before final gates.
+NEON already uses native shift/insert rotations, so this mask-specific change does
+not apply there. No replacement RS engine was introduced: the scalar profile is
+RS-bound, but the short-column packing experiment in iteration 1 already failed
+the cross-backend regression gate. A new engine was not justified by evidence.
+
+### Retained result
+
+No encoder changes; accepted performance delta is zero on every backend and thread
+count. The final release benchmark is byte-identical to the baseline, SHA-256
+`352f85bde55ce87a7944f26ddb03b0f211f1d148230003124fda27f0939f0997`.
+
+All final local gates passed on the reverted source: full release/ignored tests
+with backend unset, AVX2, SSE4.1, and scalar; static baseline; v3 with/without
+default features; v4+GFNI compile with explicit target; fmt; clippy with warnings
+denied for both feature configurations; rustdoc; scalar Miri (eight passed, two
+existing slow tests excluded as in CI); cargo-deny. ARM/NEON CI is required before
+merge. Final timings are row 2 of `BENCHMARKS.md`. Observed wall-time deltas for
+this unchanged executable, in the same size order:
+
+| Backend / threads | Final timing variation (not an encoder delta) |
+|---|---|
+| avx2 ×1 | -1.0% / +0.4% / +3.9% / -0.9% |
+| avx2 ×4 | +0.0% / -1.6% / +0.0% / -0.7% |
+| sse41 ×1 | +0.3% / -1.2% / -1.5% / -1.8% |
+| sse41 ×4 | +0.0% / +0.0% / +0.7% / +0.0% |
+| scalar ×1 | -0.1% / -0.2% / -0.1% / -0.0% |
+| scalar ×4 | -0.4% / -0.9% / -0.9% / -0.2% |
+
+The unchanged binary itself varied +3.9% in the 70 MB AVX2 ×1 case. This limits
+causal attribution of small measured regressions; neither experiment cleared the
+prescribed cutoff, so neither is retained. No improvement is inferred from the
+other fluctuations. Peak RSS for 259 MB, AVX2 ×4: 427440 KiB versus 427448 KiB for
+the saved baseline binary, an immaterial 8 KiB difference.
+
+### Needs AVX-512 validation
+
+None: both kernel experiments were reverted, including the AVX-512 specialization
+and AVX2 remainder-path changes.
 
 ## Iteration 3
 
