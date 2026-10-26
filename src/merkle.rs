@@ -1,4 +1,4 @@
-// Copyright (c) Unconfirmed Labs, LLC
+// Copyright (c) Unconfirmed Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! Merkle roots of many equally sized trees, hashed level by level in one batch per level.

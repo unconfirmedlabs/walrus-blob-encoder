@@ -1,4 +1,4 @@
-// Copyright (c) Unconfirmed Labs, LLC
+// Copyright (c) Unconfirmed Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
 // Adapted and modified from `src/engine/engine_avx2.rs` of reed-solomon-simd 3.1.0, which is
