@@ -134,19 +134,22 @@ target feature. Such a binary needs a CPU with every compiled feature (here AVX-
 DQ and VL plus GFNI, as on Ice Lake and later Xeons and on Zen 4) and stops with an illegal
 instruction on others.
 
-Reed-Solomon encoding uses [reed-solomon-simd](https://crates.io/crates/reed-solomon-simd)
-`=3.1.0` and follows the same policy, independently of the BLAKE2b backend:
+Reed-Solomon encoding runs through [reed-solomon-simd](https://crates.io/crates/reed-solomon-simd)
+`=3.1.0` with a pluggable engine, and engine selection follows the same policy:
 
-<!-- RS-AVX512 -->
+- `avx512`: this crate's AVX-512 engine (`src/reed_solomon/avx512.rs`, adapted from
+  reed-solomon-simd's AVX2 engine), with GFNI affine multiplies when GFNI is enabled at compile
+  time or detected, and AVX-512BW `vpshufb` multiplies otherwise (Skylake-SP, Cascade Lake). On
+  Ice Lake it is 1.8x faster than the AVX2 engine with GFNI and 1.2x without, for a 259 MB blob.
+- other backends: reed-solomon-simd's AVX2, SSSE3 or NEON engine when its features are enabled
+  at compile time; otherwise, with `runtime-detection`, its `DefaultEngine`, which detects one
+  at runtime; otherwise its portable `NoSimd` engine.
+- `scalar`: always the portable `NoSimd` engine.
 
-- an AVX-512 engine when AVX-512 is enabled at compile time;
-- otherwise reed-solomon-simd's AVX2, SSSE3 or NEON engine when its features are enabled at
-  compile time;
-- otherwise, with `runtime-detection`, reed-solomon-simd's `DefaultEngine`, which detects its
-  engine at runtime;
-- otherwise its portable `NoSimd` engine.
+Every engine produces identical recovery symbols; the AVX-512 kernels are tested against
+`NoSimd` for every parameter set the encoder uses and every field element.
 
-`Backend::Scalar` always selects the portable engine, giving a path without explicit SIMD code.
+`Backend::Scalar` therefore gives a path without explicit SIMD code.
 
 The output is identical for every backend and thread count.
 
@@ -165,6 +168,8 @@ allocates:
 - the zero-padded tail rows, at most `2 * (n - 2f) * (n - f) + (n - f) * s` bytes;
 - per thread, up to two Reed-Solomon encoders of about `n * s` bytes each and about
   `3 * 32 * 16 * n` bytes of Merkle scratch.
+- once per process, for the GFNI Reed-Solomon kernel, a 2 MB table of multiplication
+  matrices.
 
 Measured peak RSS with 4 threads, including the blob: 47 MB for a 0.7 MB blob and 427 MB for a
 259 MB blob (walrus-core: 426 MB). For a 256 MiB blob the peak is about 1.65 times the blob
@@ -185,14 +190,15 @@ AMD EPYC 7313P, `taskset -c 0-3`:
 | 259 MB | 1.946 | 1.035 (1.9x) | 0.273 (7.1x) | 0.373 (5.2x) | 2.276 (0.9x) |
 
 Intel Xeon Platinum 8375C (Ice Lake), AWS c6i.2xlarge limited to 4 vCPUs (2 cores with
-hyperthreads):
+hyperthreads), default build with runtime detection; the avx512 columns include the GFNI
+Reed-Solomon engine:
 
 | blob | walrus-core | avx512, 1 thread | avx512, 4 threads | avx2, 1 thread | avx2, 4 threads |
 |---|---|---|---|---|---|
-| 0.7 MB | 0.643 | 0.150 (4.3x) | 0.072 (8.9x) | 0.226 (2.8x) | 0.106 (6.1x) |
-| 17 MB | 0.675 | 0.179 (3.8x) | 0.083 (8.1x) | 0.264 (2.6x) | 0.118 (5.7x) |
-| 70 MB | 1.090 | 0.320 (3.4x) | 0.155 (7.0x) | 0.447 (2.4x) | 0.212 (5.1x) |
-| 259 MB | 2.581 | 0.907 (2.8x) | 0.524 (4.9x) | 1.231 (2.1x) | 0.570 (4.5x) |
+| 0.7 MB | 0.643 | 0.123 (5.2x) | 0.058 (11.1x) | 0.226 (2.8x) | 0.106 (6.1x) |
+| 17 MB | 0.675 | 0.146 (4.6x) | 0.066 (10.2x) | 0.264 (2.6x) | 0.118 (5.7x) |
+| 70 MB | 1.090 | 0.271 (4.0x) | 0.116 (9.4x) | 0.447 (2.4x) | 0.212 (5.1x) |
+| 259 MB | 2.581 | 0.701 (3.7x) | 0.346 (7.5x) | 1.231 (2.1x) | 0.570 (4.5x) |
 
 The scalar backend is slow because it also uses the portable Reed-Solomon engine; it exists as
 the reference path.
