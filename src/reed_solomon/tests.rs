@@ -1,7 +1,7 @@
 // Copyright (c) Unconfirmed Labs, LLC
 // SPDX-License-Identifier: Apache-2.0
 
-use reed_solomon_simd::engine::{Engine as _, NoSimd, ShardsRefMut};
+use reed_solomon_simd::engine::NoSimd;
 use reed_solomon_simd::rate::{DefaultRateEncoder, RateEncoder};
 
 use super::{Encoder, Engine, SimdEngine};
@@ -84,7 +84,7 @@ fn engines_agree() {
 #[test]
 fn simd_engine_matches_portable() {
     let mut rng = Rng(1);
-    for (original, recovery_count) in [(667, 333), (334, 666), (2, 2), (3, 1)] {
+    for (original, recovery_count) in parameter_sets() {
         for shard_bytes in shard_sizes(&mut rng) {
             let originals: Vec<_> = (0..original).map(|_| rng.bytes(shard_bytes)).collect();
             assert_eq!(
@@ -98,6 +98,8 @@ fn simd_engine_matches_portable() {
 
 #[cfg(target_arch = "x86_64")]
 mod avx512 {
+    use reed_solomon_simd::engine::{Engine as _, ShardsRefMut};
+
     use super::*;
     use crate::reed_solomon::avx512::Avx512;
 
