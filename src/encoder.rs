@@ -81,8 +81,9 @@ impl BlobEncoder {
     /// Selects the BLAKE2b backend.
     ///
     /// [`Backend::Scalar`] also selects the portable Reed-Solomon engine, giving a path free of
-    /// explicit SIMD code that is several times slower for large blobs; the other backends use
-    /// the best Reed-Solomon engine available.
+    /// explicit SIMD code that is several times slower for large blobs; [`Backend::Avx512`]
+    /// selects this crate's AVX-512 engine, with GFNI where available; the other backends use the
+    /// best engine of `reed-solomon-simd`.
     ///
     /// # Errors
     ///
@@ -168,6 +169,8 @@ impl BlobEncoder {
     fn engine(&self) -> Engine {
         match self.hasher.backend() {
             Backend::Scalar => Engine::Portable,
+            #[cfg(target_arch = "x86_64")]
+            Backend::Avx512 => Engine::Avx512,
             _ => Engine::Detected,
         }
     }

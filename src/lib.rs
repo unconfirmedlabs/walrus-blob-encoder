@@ -6,7 +6,8 @@
 //! [`BlobEncoder`] computes the same blob ID and sliver-pair hashes as walrus-core and the
 //! `walrus` CLI for the RS2 (RedStuff / Reed-Solomon) encoding, without storing the encoded
 //! slivers. The work runs on rayon threads, hashes many BLAKE2b messages at once with the best
-//! [`Backend`] of the CPU, and encodes with `reed-solomon-simd`.
+//! [`Backend`] of the CPU, and encodes with `reed-solomon-simd`, using an AVX-512 (and GFNI) engine
+//! of this crate under [`Backend::Avx512`].
 //!
 //! ```
 //! use walrus_blob_encoder::BlobEncoder;

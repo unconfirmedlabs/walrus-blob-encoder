@@ -3,9 +3,14 @@
 
 //! Reed-Solomon encoders with a selectable `reed-solomon-simd` engine.
 
+#[cfg(target_arch = "x86_64")]
+mod avx512;
+#[cfg(test)]
+mod tests;
+
 use reed_solomon_simd::{
     EncoderResult, ReedSolomonEncoder,
-    engine::{DefaultEngine, NoSimd},
+    engine::{self, DefaultEngine, NoSimd},
     rate::{DefaultRateEncoder, RateEncoder},
 };
 
@@ -14,20 +19,28 @@ pub(crate) fn supports(original: usize, recovery: usize) -> bool {
     ReedSolomonEncoder::supports(original, recovery)
 }
 
-/// Engine choice: portable code only, or the best SIMD engine `reed-solomon-simd` detects at
-/// runtime. All engines produce identical recovery shards.
+/// Engine choice: portable code only, the best SIMD engine `reed-solomon-simd` detects at
+/// runtime, or this crate's AVX-512 engine where available. All engines produce identical
+/// recovery shards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Engine {
     Portable,
     Detected,
+    #[cfg(target_arch = "x86_64")]
+    Avx512,
 }
 
 pub(crate) enum Encoder {
     Portable(DefaultRateEncoder<NoSimd>),
     Detected(DefaultRateEncoder<DefaultEngine>),
+    #[cfg(target_arch = "x86_64")]
+    Avx512(DefaultRateEncoder<avx512::Avx512>),
 }
 
 impl Encoder {
+    /// An encoder for `engine`, falling back to [`Engine::Detected`] if the AVX-512 engine cannot
+    /// run on this CPU.
+    ///
     /// # Panics
     ///
     /// Panics if the parameters are not supported; callers validate them via [`supports`] and use
@@ -38,22 +51,15 @@ impl Encoder {
         recovery: usize,
         shard_bytes: usize,
     ) -> Self {
-        const VALID: &str = "Reed-Solomon parameters are validated by the shard layout";
+        let shape = (original, recovery, shard_bytes);
         match engine {
-            Engine::Portable => Encoder::Portable(
-                DefaultRateEncoder::new(original, recovery, shard_bytes, NoSimd::new(), None)
-                    .expect(VALID),
-            ),
-            Engine::Detected => Encoder::Detected(
-                DefaultRateEncoder::new(
-                    original,
-                    recovery,
-                    shard_bytes,
-                    DefaultEngine::new(),
-                    None,
-                )
-                .expect(VALID),
-            ),
+            Engine::Portable => Encoder::Portable(rate_encoder(shape, NoSimd::new())),
+            #[cfg(target_arch = "x86_64")]
+            Engine::Avx512 => match avx512::Avx512::new() {
+                Some(engine) => Encoder::Avx512(rate_encoder(shape, engine)),
+                None => Self::new(Engine::Detected, original, recovery, shard_bytes),
+            },
+            Engine::Detected => Encoder::Detected(rate_encoder(shape, DefaultEngine::new())),
         }
     }
 
@@ -62,46 +68,31 @@ impl Encoder {
         &'s mut self,
         originals: impl IntoIterator<Item = &'a [u8]>,
     ) -> EncoderResult<'s> {
-        const SHAPE: &str = "shard count and size match the encoder";
         match self {
-            Encoder::Portable(encoder) => {
-                originals
-                    .into_iter()
-                    .for_each(|shard| encoder.add_original_shard(shard).expect(SHAPE));
-                encoder.encode().expect(SHAPE)
-            }
-            Encoder::Detected(encoder) => {
-                originals
-                    .into_iter()
-                    .for_each(|shard| encoder.add_original_shard(shard).expect(SHAPE));
-                encoder.encode().expect(SHAPE)
-            }
+            Encoder::Portable(encoder) => encode(encoder, originals),
+            Encoder::Detected(encoder) => encode(encoder, originals),
+            #[cfg(target_arch = "x86_64")]
+            Encoder::Avx512(encoder) => encode(encoder, originals),
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A rate encoder for `(original, recovery, shard_bytes)`.
+fn rate_encoder<E: engine::Engine>(
+    (original, recovery, shard_bytes): (usize, usize, usize),
+    engine: E,
+) -> DefaultRateEncoder<E> {
+    DefaultRateEncoder::new(original, recovery, shard_bytes, engine, None)
+        .expect("Reed-Solomon parameters are validated by the shard layout")
+}
 
-    #[test]
-    fn engines_agree() {
-        let shards: Vec<Vec<u8>> = (0..667u16)
-            .map(|i| (0..64u16).map(|j| (i * 31 + j * 7) as u8).collect())
-            .collect();
-        let mut portable = Encoder::new(Engine::Portable, 667, 333, 64);
-        let mut detected = Encoder::new(Engine::Detected, 667, 333, 64);
-        let a: Vec<Vec<u8>> = portable
-            .encode(shards.iter().map(Vec::as_slice))
-            .recovery_iter()
-            .map(<[u8]>::to_vec)
-            .collect();
-        let b: Vec<Vec<u8>> = detected
-            .encode(shards.iter().map(Vec::as_slice))
-            .recovery_iter()
-            .map(<[u8]>::to_vec)
-            .collect();
-        assert_eq!(a.len(), 333);
-        assert_eq!(a, b);
-    }
+fn encode<'s, 'a, E: engine::Engine>(
+    encoder: &'s mut DefaultRateEncoder<E>,
+    originals: impl IntoIterator<Item = &'a [u8]>,
+) -> EncoderResult<'s> {
+    const SHAPE: &str = "shard count and size match the encoder";
+    originals
+        .into_iter()
+        .for_each(|shard| encoder.add_original_shard(shard).expect(SHAPE));
+    encoder.encode().expect(SHAPE)
 }
