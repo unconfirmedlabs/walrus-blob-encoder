@@ -1,10 +1,10 @@
 // Copyright (c) Unconfirmed Labs, LLC
 // SPDX-License-Identifier: Apache-2.0
 
-use reed_solomon_simd::engine::{DefaultEngine, Engine as _, NoSimd, ShardsRefMut};
+use reed_solomon_simd::engine::{Engine as _, NoSimd, ShardsRefMut};
 use reed_solomon_simd::rate::{DefaultRateEncoder, RateEncoder};
 
-use super::{Encoder, Engine};
+use super::{Encoder, Engine, SimdEngine};
 
 /// SplitMix64, for reproducible random test data.
 struct Rng(u64);
@@ -76,19 +76,19 @@ fn engines_agree() {
     };
     let portable = encode(Engine::Portable);
     assert_eq!(portable.len(), 333);
-    assert_eq!(portable, encode(Engine::Detected));
+    assert_eq!(portable, encode(Engine::Simd));
     #[cfg(target_arch = "x86_64")]
     assert_eq!(portable, encode(Engine::Avx512));
 }
 
 #[test]
-fn default_engine_matches_portable() {
+fn simd_engine_matches_portable() {
     let mut rng = Rng(1);
     for (original, recovery_count) in [(667, 333), (334, 666), (2, 2), (3, 1)] {
         for shard_bytes in shard_sizes(&mut rng) {
             let originals: Vec<_> = (0..original).map(|_| rng.bytes(shard_bytes)).collect();
             assert_eq!(
-                recovery(DefaultEngine::new(), &originals, recovery_count),
+                recovery(SimdEngine::new(), &originals, recovery_count),
                 recovery(NoSimd::new(), &originals, recovery_count),
                 "({original}, {recovery_count}) with {shard_bytes}-byte shards"
             );

@@ -11,6 +11,10 @@ keywords = ["walrus", "blob-id", "reed-solomon", "blake2b", "simd"]
 categories = ["cryptography", "encoding"]
 publish = false
 
+[features]
+default = ["runtime-detection"]
+runtime-detection = []
+
 [dependencies]
 rayon = "1.11"
 reed-solomon-simd = "=3.1.0"

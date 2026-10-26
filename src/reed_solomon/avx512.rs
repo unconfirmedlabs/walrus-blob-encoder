@@ -40,8 +40,8 @@ use reed_solomon_simd::engine::{
 type Chunk = [u8; 64];
 
 /// An [`Engine`] for CPUs with AVX-512F and AVX-512BW, using GFNI when available. Only
-/// constructible through constructors that detect its kernel's features, so a value proves that
-/// the kernel can run.
+/// constructible through constructors that check its kernel's features, statically or at runtime,
+/// so a value proves that the kernel can run.
 #[derive(Clone, Copy)]
 pub(crate) struct Avx512 {
     kernel: KernelChoice,
@@ -54,25 +54,61 @@ enum KernelChoice {
     Gfni(Gfni),
 }
 
+/// Whether the CPU has all `features`: statically enabled for the target, or, with the
+/// `runtime-detection` feature, detected at runtime.
+macro_rules! available {
+    ($($feature:tt),+) => {
+        $((cfg!(target_feature = $feature) || detected!($feature)))&&+
+    };
+}
+
+#[cfg(feature = "runtime-detection")]
+macro_rules! detected {
+    ($feature:tt) => {
+        std::is_x86_feature_detected!($feature)
+    };
+}
+
+#[cfg(not(feature = "runtime-detection"))]
+macro_rules! detected {
+    ($feature:tt) => {
+        false
+    };
+}
+
+/// Calls a kernel entry point. Where `$static` shows the kernel's features are statically enabled,
+/// the entry point is an ordinary function; otherwise it is a `#[target_feature]` function,
+/// called on the strength of the kernel value passed to it.
+macro_rules! enter {
+    ($static:meta, $call:expr) => {{
+        #[cfg($static)]
+        {
+            $call
+        }
+        #[cfg(not($static))]
+        {
+            // SAFETY: a kernel value exists only if the CPU supports its features.
+            unsafe { $call }
+        }
+    }};
+}
+
 impl Avx512 {
-    /// The engine with the fastest kernel the running CPU supports, or `None` without AVX-512F
-    /// and AVX-512BW.
+    /// The engine with the fastest kernel available, or `None` without AVX-512F and AVX-512BW.
     pub(crate) fn new() -> Option<Self> {
         Self::gfni().or_else(Self::shuffle)
     }
 
-    /// The engine with the `vpshufb` kernel, or `None` if the CPU lacks its features.
+    /// The engine with the `vpshufb` kernel, or `None` if its features are unavailable.
     pub(crate) fn shuffle() -> Option<Self> {
-        (std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw"))
+        available!("avx512f", "avx512bw")
             .then(|| Self::with(KernelChoice::Shuffle(Shuffle(tables::get_mul128()))))
     }
 
-    /// The engine with the GFNI kernel, or `None` if the CPU lacks its features.
+    /// The engine with the GFNI kernel, or `None` if its features are unavailable.
     pub(crate) fn gfni() -> Option<Self> {
-        (std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("gfni"))
-        .then(|| Self::with(KernelChoice::Gfni(Gfni(affine_table()))))
+        available!("avx512f", "avx512bw", "gfni")
+            .then(|| Self::with(KernelChoice::Gfni(Gfni(affine_table()))))
     }
 
     fn with(kernel: KernelChoice) -> Self {
@@ -94,10 +130,18 @@ impl Engine for Avx512 {
     ) {
         let args = (self.skew, pos, size, truncated_size, skew_delta);
         match self.kernel {
-            // SAFETY: a kernel value exists only if the CPU supports its features.
-            KernelChoice::Shuffle(kernel) => unsafe { fft_shuffle(kernel, data, args) },
-            // SAFETY: as above.
-            KernelChoice::Gfni(kernel) => unsafe { fft_gfni(kernel, data, args) },
+            KernelChoice::Shuffle(kernel) => enter!(
+                all(target_feature = "avx512f", target_feature = "avx512bw"),
+                fft_shuffle(kernel, data, args)
+            ),
+            KernelChoice::Gfni(kernel) => enter!(
+                all(
+                    target_feature = "avx512f",
+                    target_feature = "avx512bw",
+                    target_feature = "gfni"
+                ),
+                fft_gfni(kernel, data, args)
+            ),
         }
     }
 
@@ -111,19 +155,35 @@ impl Engine for Avx512 {
     ) {
         let args = (self.skew, pos, size, truncated_size, skew_delta);
         match self.kernel {
-            // SAFETY: a kernel value exists only if the CPU supports its features.
-            KernelChoice::Shuffle(kernel) => unsafe { ifft_shuffle(kernel, data, args) },
-            // SAFETY: as above.
-            KernelChoice::Gfni(kernel) => unsafe { ifft_gfni(kernel, data, args) },
+            KernelChoice::Shuffle(kernel) => enter!(
+                all(target_feature = "avx512f", target_feature = "avx512bw"),
+                ifft_shuffle(kernel, data, args)
+            ),
+            KernelChoice::Gfni(kernel) => enter!(
+                all(
+                    target_feature = "avx512f",
+                    target_feature = "avx512bw",
+                    target_feature = "gfni"
+                ),
+                ifft_gfni(kernel, data, args)
+            ),
         }
     }
 
     fn mul(&self, x: &mut [Chunk], log_m: GfElement) {
         match self.kernel {
-            // SAFETY: a kernel value exists only if the CPU supports its features.
-            KernelChoice::Shuffle(kernel) => unsafe { mul_shuffle(kernel, x, log_m) },
-            // SAFETY: as above.
-            KernelChoice::Gfni(kernel) => unsafe { mul_gfni(kernel, x, log_m) },
+            KernelChoice::Shuffle(kernel) => enter!(
+                all(target_feature = "avx512f", target_feature = "avx512bw"),
+                mul_shuffle(kernel, x, log_m)
+            ),
+            KernelChoice::Gfni(kernel) => enter!(
+                all(
+                    target_feature = "avx512f",
+                    target_feature = "avx512bw",
+                    target_feature = "gfni"
+                ),
+                mul_gfni(kernel, x, log_m)
+            ),
         }
     }
 }
@@ -131,32 +191,62 @@ impl Engine for Avx512 {
 /// The skew table and the `pos, size, truncated_size, skew_delta` arguments of an FFT or IFFT.
 type Args = (&'static Skew, usize, usize, usize, usize);
 
-#[target_feature(enable = "avx512f,avx512bw")]
+#[cfg_attr(
+    not(all(target_feature = "avx512f", target_feature = "avx512bw")),
+    target_feature(enable = "avx512f,avx512bw")
+)]
 fn fft_shuffle(kernel: Shuffle, data: &mut ShardsRefMut, args: Args) {
     fft(kernel, data, args);
 }
 
-#[target_feature(enable = "avx512f,avx512bw")]
+#[cfg_attr(
+    not(all(target_feature = "avx512f", target_feature = "avx512bw")),
+    target_feature(enable = "avx512f,avx512bw")
+)]
 fn ifft_shuffle(kernel: Shuffle, data: &mut ShardsRefMut, args: Args) {
     ifft(kernel, data, args);
 }
 
-#[target_feature(enable = "avx512f,avx512bw")]
+#[cfg_attr(
+    not(all(target_feature = "avx512f", target_feature = "avx512bw")),
+    target_feature(enable = "avx512f,avx512bw")
+)]
 fn mul_shuffle(kernel: Shuffle, x: &mut [Chunk], log_m: GfElement) {
     mul(kernel, x, log_m);
 }
 
-#[target_feature(enable = "avx512f,avx512bw,gfni")]
+#[cfg_attr(
+    not(all(
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "gfni"
+    )),
+    target_feature(enable = "avx512f,avx512bw,gfni")
+)]
 fn fft_gfni(kernel: Gfni, data: &mut ShardsRefMut, args: Args) {
     fft(kernel, data, args);
 }
 
-#[target_feature(enable = "avx512f,avx512bw,gfni")]
+#[cfg_attr(
+    not(all(
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "gfni"
+    )),
+    target_feature(enable = "avx512f,avx512bw,gfni")
+)]
 fn ifft_gfni(kernel: Gfni, data: &mut ShardsRefMut, args: Args) {
     ifft(kernel, data, args);
 }
 
-#[target_feature(enable = "avx512f,avx512bw,gfni")]
+#[cfg_attr(
+    not(all(
+        target_feature = "avx512f",
+        target_feature = "avx512bw",
+        target_feature = "gfni"
+    )),
+    target_feature(enable = "avx512f,avx512bw,gfni")
+)]
 fn mul_gfni(kernel: Gfni, x: &mut [Chunk], log_m: GfElement) {
     mul(kernel, x, log_m);
 }
@@ -242,8 +332,8 @@ unsafe trait Kernel: Copy {
 #[derive(Clone, Copy)]
 struct Shuffle(&'static Mul128);
 
-// SAFETY: `Shuffle` is only constructed in `Avx512::shuffle` and `Avx512::new` after detecting
-// AVX-512F and AVX-512BW, and needs nothing else.
+// SAFETY: `Shuffle` is only constructed in `Avx512::shuffle` once AVX-512F and AVX-512BW are
+// known to be available, and needs nothing else.
 unsafe impl Kernel for Shuffle {
     type Lut = [__m512i; 4];
 
@@ -298,8 +388,8 @@ struct Gfni(&'static AffineTable);
 /// `vgf2p8affineqb` form.
 type AffineTable = [[u64; 4]; GF_ORDER];
 
-// SAFETY: `Gfni` is only constructed in `Avx512::gfni` after detecting AVX-512F, AVX-512BW and
-// GFNI.
+// SAFETY: `Gfni` is only constructed in `Avx512::gfni` once AVX-512F, AVX-512BW and GFNI are
+// known to be available.
 unsafe impl Kernel for Gfni {
     type Lut = [__m512i; 2];
 
