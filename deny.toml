@@ -1,0 +1,22 @@
+[graph]
+exclude-dev = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "MIT",
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

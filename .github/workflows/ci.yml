@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.94.1
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: clippy-${{ matrix.target }}
+      - run: cargo clippy --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+      - run: cargo doc --no-deps --locked --target ${{ matrix.target }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: test (${{ matrix.runner }}, ${{ matrix.backend }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, backend: auto, cpu_flag: "" }
+          - { runner: ubuntu-latest, backend: scalar, cpu_flag: "" }
+          - { runner: ubuntu-latest, backend: sse41, cpu_flag: sse4_1 }
+          - { runner: ubuntu-latest, backend: avx2, cpu_flag: avx2 }
+          - { runner: ubuntu-latest, backend: avx512, cpu_flag: avx512f }
+          - { runner: ubuntu-24.04-arm, backend: auto, cpu_flag: "" }
+          - { runner: ubuntu-24.04-arm, backend: scalar, cpu_flag: "" }
+          - { runner: ubuntu-24.04-arm, backend: neon, cpu_flag: asimd }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check the runner supports the backend
+        id: cpu
+        run: |
+          grep -m1 -E '^(flags|Features)' /proc/cpuinfo
+          if [ -z "${{ matrix.cpu_flag }}" ] || grep -m1 -E '^(flags|Features)' /proc/cpuinfo | grep -qw "${{ matrix.cpu_flag }}"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::runner lacks ${{ matrix.cpu_flag }}; skipping the ${{ matrix.backend }} backend"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        if: steps.cpu.outputs.run == 'true'
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.cpu.outputs.run == 'true'
+        with:
+          key: test-${{ matrix.runner }}
+      - name: Test
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          if [ "${{ matrix.backend }}" != auto ]; then
+            export WALRUS_BLOB_ENCODER_BACKEND=${{ matrix.backend }}
+          fi
+          cargo test --release --locked --all-targets
+          cargo test --release --locked --doc
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly-2026-10-11
+          components: miri, rust-src
+      - name: Miri on the scalar BLAKE2b backend
+        run: cargo miri test --locked --lib blake2b
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+          WALRUS_BLOB_ENCODER_BACKEND: scalar
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check
