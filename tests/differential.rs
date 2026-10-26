@@ -267,3 +267,103 @@ fn blob_id_text_matches_walrus() {
         }
     }
 }
+
+/// SplitMix64 output, the generator of `tests/vectors/cli-1000-high-entropy.txt`. Unlike the
+/// xorshift64 of [`generate`], whose output is a linear function of its state over GF(2), its
+/// multiplicative finalizer passes BigCrush, so the inputs carry no structure a linear code
+/// could interact with.
+fn splitmix64(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed;
+    let mut blob = Vec::with_capacity(len.next_multiple_of(8));
+    while blob.len() < len {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        blob.extend_from_slice(&(z ^ (z >> 31)).to_le_bytes());
+    }
+    blob.truncate(len);
+    blob
+}
+
+/// Shannon entropy of the byte histogram, in bits per byte.
+fn byte_entropy(blob: &[u8]) -> f64 {
+    let mut counts = [0u64; 256];
+    blob.iter().for_each(|&byte| counts[usize::from(byte)] += 1);
+    let len = blob.len() as f64;
+    counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let p = count as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// Checks the high-entropy input of `len` bytes against its CLI blob ID and walrus-core's full
+/// metadata, with every backend and thread count.
+fn check_high_entropy(len: usize) {
+    let (seed, expected) = include_str!("vectors/cli-1000-high-entropy.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let [l, seed, id] = fields[..] else {
+                panic!("malformed line {line:?}");
+            };
+            (l.parse::<usize>().unwrap() == len)
+                .then(|| (seed.parse().unwrap(), id.parse::<BlobId>().unwrap()))
+        })
+        .unwrap_or_else(|| panic!("no CLI vector for {len} bytes"));
+    let blob = splitmix64(len, seed);
+    // The maximum for a sample of `len` bytes is below 8 bits by about 255 / (2 len ln 2).
+    let entropy = byte_entropy(&blob);
+    assert!(
+        entropy > 8.0 - 400.0 / len as f64,
+        "len={len} entropy={entropy}"
+    );
+
+    let theirs = walrus_config(1000).compute_metadata(&blob).unwrap();
+    assert_eq!(
+        theirs.blob_id().0,
+        *expected.as_bytes(),
+        "walrus-core len={len}"
+    );
+    for_each_backend_and_pool(1000, |label, encoder| {
+        let context = format!("high entropy len={len} {label}");
+        let ours = encoder.metadata(&blob).unwrap();
+        assert_eq!(ours.blob_id(), expected, "{context}");
+        assert_same(&ours, &theirs, &context);
+    });
+}
+
+#[test]
+fn high_entropy_1_kb() {
+    check_high_entropy(1_000);
+}
+
+#[test]
+fn high_entropy_10_kb() {
+    check_high_entropy(10_000);
+}
+
+#[test]
+fn high_entropy_100_kb() {
+    check_high_entropy(100_000);
+}
+
+#[test]
+fn high_entropy_1_mb() {
+    check_high_entropy(1_000_000);
+}
+
+#[test]
+fn high_entropy_10_mb() {
+    check_high_entropy(10_000_000);
+}
+
+#[test]
+fn high_entropy_100_mb() {
+    check_high_entropy(100_000_000);
+}

@@ -1,0 +1,15 @@
+# Blob IDs from `walrus blob-id --n-shards 1000 <file>`, walrus CLI 1.58.1-e53a60444ac7.
+#
+# Columns: length in bytes, seed, blob ID.
+#
+# Each input is the SplitMix64 stream with initial state `seed`: each step adds
+# 0x9E3779B97F4A7C15 to the state (mod 2^64), mixes it with
+# z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9, z = (z ^ (z >> 27)) * 0x94D049BB133111EB,
+# z ^ (z >> 31), and appends the 8 little-endian bytes of the result; the output is truncated
+# to the length.
+1000 1592590336 1neifopykUaKgkXedIx5avMELlbwpoCsGbSrXbf2RfE
+10000 1592590337 wphn8knUFm2HfPcQM7mxW7iybTLQtBzE7MoQ8R2gqHU
+100000 1592590338 kDa0S2n3o0muv7HQzdjyR8lgW6l6IxafMvqIwrF6iS4
+1000000 1592590339 aPqu3ZUq_AzE9g9FNRNfM00gYoaxGrECJTHD_K2vTa0
+10000000 1592590340 tjM6OEn0-03HxoFZ5dIkSHFzr2l0ijHKsbhWmS6hYMw
+100000000 1592590341 CBmhMF9ahHQciaaWOBzHwxUoJjuP931N17NXO9Lq4IA

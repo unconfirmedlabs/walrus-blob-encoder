@@ -167,8 +167,11 @@ cargo bench --bench encoder -- 'blob_id/17MB/(walrus-core|avx2)'
   small committees, the maximum blob size and symbol size up to 49,155 shards, and the blob ID
   text form, parsing included.
 - Golden vectors from the `walrus` CLI 1.58.1: 32 generated inputs in
-  [`tests/vectors/cli-1000.txt`](tests/vectors/cli-1000.txt), and four real files checked when
-  `WALRUS_BLOB_ENCODER_FILES` names a directory holding them.
+  [`tests/vectors/cli-1000.txt`](tests/vectors/cli-1000.txt); high-entropy SplitMix64 inputs of
+  1 KB, 10 KB, 100 KB, 1 MB, 10 MB and 100 MB in
+  [`tests/vectors/cli-1000-high-entropy.txt`](tests/vectors/cli-1000-high-entropy.txt), each
+  also checked against walrus-core's full metadata with every backend and thread count; and
+  four real files checked when `WALRUS_BLOB_ENCODER_FILES` names a directory holding them.
 - The supported shard counts, exactly 4 to 49,155, are checked against walrus-core's encoder
   construction for 1 to 2100, 49,000 to 49,300 and a sample up to 65,535, and the blob IDs
   for 1 to 40 shards.
