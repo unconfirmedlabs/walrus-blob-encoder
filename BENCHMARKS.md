@@ -21,6 +21,7 @@ CARGO_BUILD_JOBS=8 RAYON_NUM_THREADS=4 taskset -c 2-5 cargo run --release --lock
 | 0 | 0.495 / 0.524 / 0.862 / 2.053 | 0.200 / 0.233 / 0.400 / 1.041 | 0.053 / 0.062 / 0.103 / 0.280 | 0.310 / 0.339 / 0.572 / 1.525 | 0.080 / 0.088 / 0.149 / 0.394 | 0.883 / 1.288 / 2.764 / 9.364 | 0.224 / 0.326 / 0.699 / 2.373 |
 | 1 | 0.494 / 0.523 / 0.861 / 2.050 | 0.199 / 0.233 / 0.398 / 1.091 | 0.053 / 0.062 / 0.104 / 0.283 | 0.308 / 0.340 / 0.580 / 1.515 | 0.080 / 0.088 / 0.150 / 0.387 | 0.882 / 1.283 / 2.773 / 9.365 | 0.225 / 0.326 / 0.704 / 2.376 |
 | 2 | 0.499 / 0.525 / 0.860 / 2.099 | 0.199 / 0.233 / 0.404 / 1.045 | 0.053 / 0.061 / 0.105 / 0.282 | 0.310 / 0.338 / 0.572 / 1.500 | 0.080 / 0.088 / 0.151 / 0.393 | 0.884 / 1.284 / 2.760 / 9.371 | 0.224 / 0.325 / 0.699 / 2.371 |
+| 3 | 0.496 / 0.524 / 0.876 / 2.059 | 0.199 / 0.233 / 0.414 / 1.047 | 0.053 / 0.061 / 0.109 / 0.285 | 0.310 / 0.339 / 0.596 / 1.533 | 0.080 / 0.089 / 0.155 / 0.399 | 0.884 / 1.296 / 2.781 / 9.377 | 0.225 / 0.326 / 0.705 / 2.375 |
 
 Iteration 0 was measured on the first Spot instance; iteration 1 on its replacement
 following an AWS interruption. Iteration 1 retains no library changes (the rebuilt
@@ -32,6 +33,10 @@ on the On-Demand instance; that fresh baseline is the denominator for iteration 
 Iteration 2 also retains no encoder changes and has the same executable hash as
 the baseline. Its wall-time differences are measurement variation, not accepted
 speedups or slowdowns. Peak RSS: 427440 KiB (baseline binary: 427448 KiB).
+
+Iteration 3 also retains no production-code changes. Its executable is byte-identical
+to the original baseline; the observed wall-time variation is not an encoder delta.
+Final 259 MB peak RSS: 427268 KiB. All runtime experiments were reverted.
 
 ## On-Demand comparison baseline
 
