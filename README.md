@@ -14,7 +14,7 @@ The crate is not on crates.io; depend on it by Git revision:
 
 ```toml
 [dependencies]
-walrus-blob-encoder = { git = "https://github.com/unconfirmedlabs/walrus-blob-encoder", rev = "<commit>" }
+walrus-blob-encoder = { git = "https://github.com/misofm/walrus-blob-encoder", rev = "<commit>" }
 ```
 
 ```rust
