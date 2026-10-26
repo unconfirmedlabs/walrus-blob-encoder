@@ -68,7 +68,7 @@ pub enum Backend {
     Scalar,
     /// x86-64 AVX2, four messages at a time.
     Avx2,
-    /// x86-64 AVX-512 (F and BW), eight messages at a time.
+    /// x86-64 AVX-512 (F and BW, with AVX2 for remainders), eight messages at a time.
     Avx512,
     /// AArch64 NEON, two messages at a time.
     Neon,

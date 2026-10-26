@@ -24,6 +24,7 @@ walrus-core = { git = "https://github.com/MystenLabs/walrus.git", rev = "c377852
 [[bench]]
 name = "encoder"
 harness = false
+test = false
 
 [lints.rust]
 missing_docs = "warn"

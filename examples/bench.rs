@@ -4,7 +4,7 @@
 //! Times blob-ID computation per backend and thread count, optionally against walrus-core.
 //!
 //! ```text
-//! cargo run --release --example bench -- [--ref] [--backend all|scalar|avx2|avx512|neon]
+//! cargo run --release --example bench -- [--ref] [--backend all|avx512|avx2|neon|sse41|scalar]
 //!     [--threads 1,4] [--repeat N] <files...>
 //! ```
 
@@ -22,7 +22,7 @@ use walrus_core::{
     encoding::{EncodingConfig, EncodingFactory as _},
 };
 
-const USAGE: &str = "usage: bench [--ref] [--backend all|scalar|avx2|avx512|neon] \
+const USAGE: &str = "usage: bench [--ref] [--backend all|avx512|avx2|neon|sse41|scalar] \
                      [--threads 1,4] [--repeat N] <files...>";
 
 struct Options {
