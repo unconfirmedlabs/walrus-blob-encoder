@@ -17,6 +17,7 @@ reed-solomon-simd = "=3.1.0"
 
 [dev-dependencies]
 blake2 = "0.10.6"
+proptest = "1.6"
 walrus-core = { git = "https://github.com/MystenLabs/walrus.git", rev = "c377852712d30a23031c04d07dc13bf5e20a92de", package = "walrus-core" }
 
 [lints.rust]
