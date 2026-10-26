@@ -118,6 +118,22 @@ fn largest_symbol_size_boundaries() {
     check_lengths(1000, boundaries([1000]));
 }
 
+/// Small committees have small matrices, so their symbol-size steps can be checked across the
+/// whole `u16` range: every step up to symbol size 512, then every 97th, and the last ones.
+#[test]
+fn symbol_size_boundaries_whole_range_small_shard_counts() {
+    for n_shards in [4, 7] {
+        let symbols = walrus_config(n_shards).source_symbols_per_blob().get() as usize;
+        let ks = (2..=512)
+            .step_by(2)
+            .chain((514..65_534).step_by(2 * 97))
+            .chain([65_532, 65_534]);
+        let lengths = ks.flat_map(|k| [k * symbols - 1, k * symbols, k * symbols + 1]);
+        let max = 65_534 * symbols;
+        check_lengths(n_shards, lengths.filter(|&len| len <= max));
+    }
+}
+
 #[test]
 fn random_lengths() {
     let lengths: Vec<usize> = generate(8 * 8, 0x5eed)

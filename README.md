@@ -161,7 +161,8 @@ cargo bench --bench encoder -- 'blob_id/17MB/(walrus-core|avx2)'
   compares the full metadata (blob ID, encoding type, length, shard count and every primary
   and secondary hash) for every available backend, rotating through 1, 2, 3 and 8 threads:
   edge lengths, lengths at and next to every symbol-size step up to 10 bytes and sampled steps
-  up to 258 bytes (1002 with `--ignored`), random lengths up to 4 MiB, 14 other
+  up to 258 bytes (1002 with `--ignored`) for 1000 shards, every step up to symbol
+  size 512 and a sample across the whole range up to 65,534 for 4 and 7 shards, random lengths up to 4 MiB, 14 other
   shard counts from 4 to 2000, the maximum blob size and the rejection of one byte more on
   small committees, the maximum blob size and symbol size up to 49,155 shards, and the blob ID
   text form, parsing included.
