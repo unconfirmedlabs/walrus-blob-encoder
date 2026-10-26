@@ -223,8 +223,8 @@ All final local gates passed on the reverted source: full release/ignored tests
 with backend unset, AVX2, SSE4.1, and scalar; static baseline; v3 with/without
 default features; v4+GFNI compile with explicit target; fmt; clippy with warnings
 denied for both feature configurations; rustdoc; scalar Miri (eight passed, two
-existing slow tests excluded as in CI); cargo-deny. ARM/NEON CI is required before
-merge. Final timings are row 2 of `BENCHMARKS.md`. Observed wall-time deltas for
+existing slow tests excluded as in CI); cargo-deny. All 18 CI checks passed, including actual ARM/NEON tests, before PR #3 was
+merged. Final timings are row 2 of `BENCHMARKS.md`. Observed wall-time deltas for
 this unchanged executable, in the same size order:
 
 | Backend / threads | Final timing variation (not an encoder delta) |
@@ -247,6 +247,155 @@ the saved baseline binary, an immaterial 8 KiB difference.
 None: both kernel experiments were reverted, including the AVX-512 specialization
 and AVX2 remainder-path changes.
 
-## Iteration 3
+## Iteration 3 — minimalism and efficiency
 
-Pending iteration 2 merge.
+Base: `2eb6138`, after PR #3 merged with green CI. The same On-Demand instance and
+input bytes are used; no additional cloud resource was created.
+
+### Profile and memory evidence
+
+Fresh 499 Hz software `perf` sampling: AVX2 BLAKE2b 52.51%, RS FFT/IFFT 28.05%;
+SSE4.1 BLAKE2b 65.87%; scalar RS FFT/IFFT 77.68%, hashing 19.78%. A separate,
+uncommitted diagnostic copy refreshed the phase timers with the original 16-tree
+batches and no rejected packing or kernel changes. These are warm second-call
+milliseconds, not acceptance timings:
+
+| AVX2 input / threads | Total wall | Row RS | Column RS | Gather/copy | Leaf hash | Inner hash | Allocation |
+|---|---|---|---|---|---|---|---|
+| 0.7 MB ×1 | 211.0 | 10.5 | 29.0 | 7.0 | 53.7 | 108.1 | 1.3 |
+| 0.7 MB ×4 | 55.5 | 10.4 | 31.0 | 7.2 | 54.0 | 108.8 | 1.4 |
+| 259 MB ×1 | 1110.0 | 119.4 | 330.1 | 107.8 | 474.9 | 108.3 | 1.5 |
+| 259 MB ×4 | 291.1 | 115.6 | 330.2 | 113.0 | 475.4 | 109.2 | 6.2 |
+
+Task timers accumulate across workers; row/column RS include their input copies,
+so these columns overlap and must not be summed. Merkle gathering separately took
+3.2–4.0 ms. Allocation timing includes the instrumented constructors/zero filling,
+not every allocation in the process. Instrumentation changes code generation and
+adds overhead; only the uninstrumented matrix decides acceptance.
+
+At four threads, row/systematic branch spans were 10.9/17.3 ms for small AVX2 and
+181.8/181.8 ms for large AVX2. Large SSE4.1 showed 89.6/239.2 ms, while scalar was
+1691.5/1691.5 ms. Rayon can steal work while a branch waits; branch-span differences
+are not idle-thread measurements and do not establish an exploitable barrier stall.
+
+For the 259209074-byte input, symbols are 1164 bytes. The input, 129462408-byte row
+recovery buffer, and 32000000-byte leaf matrix alone occupy 401.18 MiB. The tail,
+RS workspace/tables, code, and runtime account for the remainder of roughly 417 MiB
+RSS. Recovery is explicitly freed before Merkle scratch is allocated. The earlier
+scratch-batch experiment failed the timing gate, and deleting the lazily allocated
+GFNI table would not save memory on this AVX2 host.
+
+### API, dependencies, and binary size
+
+The public surface consists of the encoder and shard constant, backend selection,
+ID representation/parsing, metadata and encoding types, and their errors. Hashing,
+RS engines, layout, and scratch types are already private. No public removal was
+justified by the consumer requirements or a measured benefit.
+
+`cargo +nightly-2026-10-11 udeps --all-targets --locked` (cargo-udeps 0.1.61) found
+no unused dependencies. Normal dependencies remain rayon and reed-solomon-simd;
+blake2, criterion, proptest, and walrus-core are used only for development.
+BLAKE2b shares its IV/permutation constants. The AVX-512 shuffle engine reuses the
+dependency's tables; its separate GFNI affine table is a different representation,
+initialized once on demand, not a redundant copy to delete.
+
+A temporary minimal consumer reads a file, calls `BlobEncoder::mainnet().blob_id`,
+and prints the ID. It uses the same lockfile versions and release fat LTO/one
+codegen unit. cargo-bloat 0.12.1 attributes approximately 60.5% of default `.text`
+to std, 14.9% to this crate, 10.5% to reed-solomon-simd, and 9.9% to rayon/core.
+Attribution is approximate, particularly with LTO. The benchmark example includes
+walrus-core, so its file size is not used as a consumer size measurement.
+
+Before this change, the consumer's normal release ELF was 692744 bytes with default
+dispatch and 670960 bytes with v3/static selection. The existing static configuration
+was already 3.1% smaller; that is not an improvement made by this iteration.
+cargo-bloat creates a debug-bearing inspection artifact; these ELF sizes were taken
+after a normal release rebuild, with symbols retained. Both consumers printed the
+known empty-blob ID.
+
+### Rejected: remove the unavailable encoder variant
+
+Symbol inspection found four AVX-512 RS FFT/IFFT functions in the static v3 binary,
+although its constructors can never select that engine. The first candidate gated
+the module, encoder variant, and encode arm on runtime detection or static
+AVX-512F/BW support, preserving all code and tests in unit-test builds.
+
+The static consumer shrank from 670960 to 657640 bytes (13320 bytes, 2.0%); the
+default consumer remained 692744 bytes. Focused RS tests passed, but the paired
+two-run best-of-five static v3 matrix failed the performance gate. Elapsed-time
+deltas, 0.7 / 17 / 70 / 259 MB:
+
+| Backend / threads | Rejected variant-pruning delta |
+|---|---|
+| avx2 ×1 | +1.5% / +0.9% / -0.8% / +1.2% |
+| avx2 ×4 | +1.9% / +0.0% / +2.9% / +1.4% |
+| sse41 ×1 | +0.0% / -1.4% / +1.7% / -0.8% |
+| sse41 ×4 | +1.2% / -1.1% / -0.6% / -0.7% |
+| scalar ×1 | -0.5% / -0.3% / -0.2% / -0.0% |
+| scalar ×4 | -0.5% / -0.4% / +0.4% / +0.1% |
+
+The 70 MB AVX2 ×4 case measured 2.9% slower. Reverted this version.
+
+### Rejected: preserve the encoder layout
+
+Retain the existing enum and constructors, but do not instantiate the AVX-512
+encoding call in static builds lacking AVX-512F/BW. Constructors cannot create
+that variant in such builds; its encode arm reports an unreachable state. Unit-test
+builds retain the original path and every existing kernel/table test. This may
+remove the unreachable functions without changing the enum layout. No kernel
+arithmetic, unsafe block, table, or public API changes.
+
+The static consumer was 657952 bytes, 13008 bytes (1.9%) smaller than baseline.
+Focused RS tests passed, but the two-run best-of-five matrix again failed the gate:
+
+| Backend / threads | Rejected encode-arm pruning delta |
+|---|---|
+| avx2 ×1 | +0.0% / +2.2% / -0.5% / +0.2% |
+| avx2 ×4 | +1.9% / +1.6% / +2.9% / +0.4% |
+| sse41 ×1 | +0.0% / -1.7% / +1.7% / -0.5% |
+| sse41 ×4 | +0.0% / -1.1% / -0.6% / -1.2% |
+| scalar ×1 | -0.1% / -0.4% / -0.2% / -0.3% |
+| scalar ×4 | -0.5% / +0.0% / +0.4% / -0.1% |
+
+AVX2 ×1 at 17 MB measured 2.2% slower and AVX2 ×4 at 70 MB measured 2.9% slower.
+Preserving the enum layout did not clear the measured regression. This version was
+also reverted. The four unused kernels remain; no binary-size reduction is claimed.
+
+### Retained result and gates
+
+No production-code, API, dependency, or table changes. README refreshes the benchmark
+table, uses precise memory units, and corrects the dispatch heading to say runtime
+detection is enabled by default. The accepted encoder and binary-size deltas are
+zero for every backend and thread count. The final benchmark executable is
+byte-identical to the original baseline:
+`352f85bde55ce87a7944f26ddb03b0f211f1d148230003124fda27f0939f0997`.
+Row 3 in `BENCHMARKS.md` and the README record the final two best-of-five runs.
+Observed variation versus row 2, in the same size order:
+
+| Backend / threads | Final timing variation (not an encoder delta) |
+|---|---|
+| avx2 ×1 | +0.0% / +0.0% / +2.5% / +0.2% |
+| avx2 ×4 | +0.0% / +0.0% / +3.8% / +1.1% |
+| sse41 ×1 | +0.0% / +0.3% / +4.2% / +2.2% |
+| sse41 ×4 | +0.0% / +1.1% / +2.6% / +1.5% |
+| scalar ×1 | +0.0% / +0.9% / +0.8% / +0.1% |
+| scalar ×4 | +0.4% / +0.3% / +0.9% / +0.2% |
+
+The unchanged executable varied by up to 4.2% in these encoder measurements. This
+limits causal attribution of small differences; the cutoff was applied
+conservatively to the experimental changes, and none is retained. Peak RSS is
+427268 KiB (417.3 MiB), versus 427440 KiB in iteration 2; this small fluctuation
+is not a memory improvement.
+
+All 15 final local gates passed: full release/ignored suites for the unset backend,
+AVX2, SSE4.1, scalar, static baseline, and v3 with/without default features; v4+GFNI
+compilation both with and without default features using an explicit target; fmt;
+clippy with warnings denied for both feature configurations; rustdoc; scalar Miri
+(eight passed, two existing slow tests excluded as in CI); cargo-deny. ARM/NEON CI
+must also be green before merge. No fixture or correctness assertion was weakened.
+
+
+### Needs AVX-512 validation
+
+None: both static-pruning experiments were reverted. No AVX-512 or GFNI changes
+remain. The final compile matrix includes v4+GFNI with and without default features.
