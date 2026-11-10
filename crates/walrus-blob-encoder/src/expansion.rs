@@ -352,7 +352,7 @@ impl Expansion {
 /// The metadata of a blob held in memory as the message matrix `rows`, whose row `r` is
 /// `row(r)`: the systematic columns are read in place, and the only buffer is the
 /// `n_rows * n_faulty * s` bytes of the rows' recovery symbols. With `parallel` (and the `rayon`
-/// feature), the work runs on the current rayon pool.
+/// feature), the work runs on the current rayon pool. This is the in-memory encoder.
 pub(crate) fn in_memory<'a>(
     mut expansion: Expansion,
     rows: Rows<'a>,

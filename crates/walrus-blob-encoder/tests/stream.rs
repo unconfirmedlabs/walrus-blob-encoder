@@ -80,16 +80,6 @@ fn check(n_shards: u16, blob: &[u8], column_multiples: &[usize], absolute: &[usi
     let encoder = BlobEncoder::new(n_shards).unwrap();
     let in_memory = encoder.metadata(blob).unwrap();
     assert_same(&in_memory, &expected, "in memory");
-    assert_eq!(
-        encoder.metadata_sequential(blob).unwrap(),
-        in_memory,
-        "sequential"
-    );
-    assert_eq!(
-        encoder.metadata_parallel(blob).unwrap(),
-        in_memory,
-        "parallel"
-    );
     let n = usize::from(n_shards.get());
     let f = (n - 1) / 3;
     let column = (n - 2 * f) * usize::from(encoder.symbol_size(blob.len() as u64).unwrap().get());

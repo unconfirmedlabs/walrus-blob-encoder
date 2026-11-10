@@ -1,16 +1,51 @@
 // Copyright (c) Unconfirmed Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{
-    num::NonZeroU16,
-    sync::{Arc, OnceLock},
-};
+use std::num::NonZeroU16;
+#[cfg(feature = "rayon")]
+use std::sync::{Arc, OnceLock};
 
+#[cfg(feature = "rayon")]
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use walrus_blob_encoder::{Backend, BlobEncoder};
 
 /// Thread counts every input is checked with, each on a dedicated pool.
+#[cfg(feature = "rayon")]
 const THREAD_COUNTS: [usize; 4] = [1, 2, 3, 8];
+/// Without rayon every encoder runs on the calling thread.
+#[cfg(not(feature = "rayon"))]
+const THREAD_COUNTS: [usize; 1] = [1];
+
+/// A thread pool of a given size, or just its size without rayon.
+#[cfg(feature = "rayon")]
+type Pool = Arc<ThreadPool>;
+#[cfg(not(feature = "rayon"))]
+type Pool = usize;
+
+#[cfg(feature = "rayon")]
+fn pool(threads: usize) -> Pool {
+    Arc::new(
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap(),
+    )
+}
+
+#[cfg(not(feature = "rayon"))]
+fn pool(threads: usize) -> Pool {
+    threads
+}
+
+#[cfg(feature = "rayon")]
+fn threads(pool: &Pool) -> usize {
+    pool.current_num_threads()
+}
+
+#[cfg(not(feature = "rayon"))]
+fn threads(pool: &Pool) -> usize {
+    *pool
+}
 
 /// The backends under test: all available ones, or exactly `$WALRUS_BLOB_ENCODER_BACKEND`.
 fn backends() -> Vec<Backend> {
@@ -31,26 +66,25 @@ fn backends() -> Vec<Backend> {
     }
 }
 
-fn pools() -> &'static [Arc<ThreadPool>] {
-    static POOLS: OnceLock<Vec<Arc<ThreadPool>>> = OnceLock::new();
-    POOLS.get_or_init(|| {
-        THREAD_COUNTS
-            .iter()
-            .map(|&n| Arc::new(ThreadPoolBuilder::new().num_threads(n).build().unwrap()))
-            .collect()
-    })
+#[cfg(feature = "rayon")]
+fn pools() -> &'static [Pool] {
+    static POOLS: OnceLock<Vec<Pool>> = OnceLock::new();
+    POOLS.get_or_init(|| THREAD_COUNTS.iter().map(|&n| pool(n)).collect())
 }
 
-fn encoder(n_shards: u16, backend: Backend, pool: &Arc<ThreadPool>) -> (String, BlobEncoder) {
+#[cfg(not(feature = "rayon"))]
+fn pools() -> &'static [Pool] {
+    &THREAD_COUNTS
+}
+
+fn encoder(n_shards: u16, backend: Backend, pool: &Pool) -> (String, BlobEncoder) {
     let encoder = BlobEncoder::new(NonZeroU16::new(n_shards).unwrap())
         .unwrap()
         .with_backend(backend)
-        .unwrap()
-        .with_thread_pool(pool.clone());
-    (
-        format!("{backend} x{}", pool.current_num_threads()),
-        encoder,
-    )
+        .unwrap();
+    #[cfg(feature = "rayon")]
+    let encoder = encoder.with_thread_pool(pool.clone());
+    (format!("{backend} x{}", threads(pool)), encoder)
 }
 
 fn run_concurrently(
@@ -71,12 +105,7 @@ fn run_serial(n_shards: u16, threads: &[usize], check: &impl Fn(&str, &BlobEncod
         return false;
     }
     for &threads in threads {
-        let pool = Arc::new(
-            ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap(),
-        );
+        let pool = pool(threads);
         for backend in backends() {
             let (label, encoder) = encoder(n_shards, backend, &pool);
             check(&label, &encoder);

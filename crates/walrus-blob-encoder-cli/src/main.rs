@@ -32,8 +32,6 @@ struct Options {
     shards: u16,
     backend: Option<Backend>,
     stats: bool,
-    sequential: bool,
-    parallel: bool,
     files: Vec<String>,
 }
 
@@ -44,8 +42,6 @@ fn parse() -> Result<Options, String> {
         shards: 1000,
         backend: None,
         stats: false,
-        sequential: false,
-        parallel: false,
         files: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
@@ -57,14 +53,6 @@ fn parse() -> Result<Options, String> {
                 options.budget = Some(mib);
             }
             "--memory" => options.budget = None,
-            "--sequential" => {
-                options.budget = None;
-                options.sequential = true;
-            }
-            "--parallel" => {
-                options.budget = None;
-                options.parallel = true;
-            }
             "--threads" => {
                 let threads = value()?.parse().map_err(|_| "invalid thread count")?;
                 options.threads = Some(threads);
@@ -153,14 +141,7 @@ fn run(encoder: &BlobEncoder, options: &Options, path: &str) -> Result<(), Strin
             let read = Instant::now();
             let blob = std::fs::read(path).map_err(|e| error(&e))?;
             let io = read.elapsed();
-            let metadata = if options.sequential {
-                encoder.metadata_sequential(&blob)
-            } else if options.parallel {
-                encoder.metadata_parallel(&blob)
-            } else {
-                encoder.metadata(&blob)
-            };
-            (metadata.map_err(|e| error(&e))?, None, io)
+            (encoder.metadata(&blob).map_err(|e| error(&e))?, None, io)
         }
     };
     let wall = start.elapsed();
@@ -193,8 +174,6 @@ fn run(encoder: &BlobEncoder, options: &Options, path: &str) -> Result<(), Strin
             metadata.unencoded_length(),
             match options.budget {
                 Some(mib) => format!("stream {mib} MiB"),
-                None if options.sequential => "sequential".to_string(),
-                None if options.parallel => "parallel".to_string(),
                 None => "memory".to_string(),
             },
             encoder.backend(),

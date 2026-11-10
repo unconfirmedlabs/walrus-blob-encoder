@@ -1,24 +1,21 @@
 // Copyright (c) Unconfirmed Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The blob encoder and its parallel schedule.
+//! The blob encoder: shard parameters, backend and thread pool, and the in-memory entry points.
 //!
-//! 1. Rows of the message matrix are Reed-Solomon encoded into the recovery buffer, while the
-//!    systematic columns (which only need the blob) are encoded and their leaves hashed.
-//! 2. The non-systematic columns are encoded from the recovery buffer and their leaves hashed.
-//! 3. The Merkle roots of all rows and columns of the expanded matrix are computed, several trees
-//!    per task so that every batch of inner-node hashes is wide.
-//! 4. The sliver-pair tree and the blob ID are computed.
-//!
-//! Every output slot is written by exactly one task, so the result does not depend on the
-//! number of threads or the backend.
+//! An in-memory blob is a seekable source whose reads are free, so its metadata comes from the
+//! same column-by-column [`Expansion`] as the streaming encoder's, in a single pass: the
+//! systematic columns are read from the blob in place, the rows are encoded once into their
+//! recovery symbols, and the parity columns are read from those. With the `rayon` feature and
+//! more than one thread, rows and columns are encoded in parallel (see [`expansion`]). The
+//! result does not depend on the number of threads or the backend.
 
 use std::num::NonZeroU16;
 #[cfg(feature = "rayon")]
 use std::sync::Arc;
 
 #[cfg(feature = "rayon")]
-use rayon::{ThreadPool, prelude::*};
+use rayon::ThreadPool;
 
 use crate::{
     Backend, BlobId, BlobMetadata, Error,
@@ -27,25 +24,9 @@ use crate::{
     layout::{MessageMatrix, ShardLayout},
     reed_solomon::Engine,
 };
-#[cfg(feature = "rayon")]
-use crate::{
-    blake2b::{DIGEST_LEN, Digest},
-    layout::Rows,
-    merkle::{self, LEAF_PREFIX, TreeScratch},
-    messages::MessageBuf,
-    reed_solomon::Encoder,
-};
 
 /// Number of shards of Walrus mainnet.
 pub const MAINNET_N_SHARDS: NonZeroU16 = NonZeroU16::new(1000).unwrap();
-
-/// Merkle trees reduced together per task, so that the narrow top levels still fill the SIMD
-/// lanes of the hasher.
-#[cfg(feature = "rayon")]
-const TREES_PER_TASK: usize = 16;
-
-#[cfg(feature = "rayon")]
-const ZERO_NODE: Digest = [0; DIGEST_LEN];
 
 /// Computes Walrus blob IDs and blob metadata for a fixed number of shards.
 ///
@@ -162,33 +143,39 @@ impl BlobEncoder {
     /// `f = (n - 1) / 3`, `n_rows = n - 2f`, `n_cols = n - f` and symbol size `s`:
     ///
     /// - the recovery symbols of the row encoding, `n_rows * f * s` bytes (about half the blob);
-    /// - the leaf hashes of the expanded matrix, `32 * n^2` bytes (32 MB for 1000 shards);
     /// - the rows not entirely inside the blob, zero padded, at most
     ///   `2 * n_rows * n_cols + n_cols * s` bytes;
-    /// - per thread, up to two Reed-Solomon encoders of about `n * s` bytes of work space each
-    ///   (symbols rounded up to 64 bytes), and Merkle scratch of about `3 * 32 * 16 * n` bytes.
+    /// - the row trees, about `64 * n * (log2(n) + 2)` bytes (0.8 MB for 1000 shards);
+    /// - per thread, one Reed-Solomon encoder with about `2 * next_power_of_two(f) * s` bytes of
+    ///   work space (symbols rounded up to 64 bytes) and multiplication tables of at most
+    ///   384 KiB;
+    /// - with more than one thread, the leaf hashes of 256 columns at a time, `8192 * n` bytes
+    ///   (8 MB for 1000 shards).
     ///
-    /// The recovery symbols are freed before the Merkle phase.
+    /// It runs on the encoder's thread pool (see [`Self::with_thread_pool`]) or the current
+    /// rayon pool, and on the calling thread alone without the `rayon` feature.
     ///
     /// # Errors
     ///
     /// Returns [`Error::DataTooLarge`] if the blob exceeds [`Self::max_blob_size`].
     pub fn metadata(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
         let len = blob.len() as u64;
-        let symbol_size = usize::from(self.symbol_size(len)?.get());
+        let s = usize::from(self.symbol_size(len)?.get());
+        let compute = || {
+            #[cfg(feature = "rayon")]
+            let parallel = rayon::current_num_threads() > 1;
+            #[cfg(not(feature = "rayon"))]
+            let parallel = false;
+            let matrix = MessageMatrix::new(blob, &self.layout, s);
+            let expansion = Expansion::new(self.hasher, self.engine(), self.layout, s);
+            let row = |r| matrix.row(r);
+            expansion::in_memory(expansion, matrix.rows(), row, len, parallel)
+        };
         #[cfg(feature = "rayon")]
-        {
-            let compute = || self.compute(blob, symbol_size);
-            Ok(match &self.pool {
-                Some(pool) => pool.install(compute),
-                None => compute(),
-            })
+        if let Some(pool) = &self.pool {
+            return Ok(pool.install(compute));
         }
-        #[cfg(not(feature = "rayon"))]
-        {
-            let _ = symbol_size;
-            self.metadata_sequential(blob)
-        }
+        Ok(compute())
     }
 
     pub(crate) fn engine(&self) -> Engine {
@@ -207,63 +194,6 @@ impl BlobEncoder {
     pub(crate) fn layout(&self) -> ShardLayout {
         self.layout
     }
-
-    /// The metadata of `blob` computed column by column on the calling thread, with the expanded
-    /// rows of the parity columns as the only buffer.
-    #[doc(hidden)]
-    pub fn metadata_sequential(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
-        self.metadata_in_memory(blob, false)
-    }
-
-    /// The same as [`Self::metadata_sequential`] on the encoder's thread pool.
-    #[doc(hidden)]
-    #[cfg(feature = "rayon")]
-    pub fn metadata_parallel(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
-        let compute = || self.metadata_in_memory(blob, true);
-        match &self.pool {
-            Some(pool) => pool.install(compute),
-            None => compute(),
-        }
-    }
-
-    fn metadata_in_memory(&self, blob: &[u8], parallel: bool) -> Result<BlobMetadata, Error> {
-        let len = blob.len() as u64;
-        let s = usize::from(self.symbol_size(len)?.get());
-        let matrix = MessageMatrix::new(blob, &self.layout, s);
-        let expansion = Expansion::new(self.hasher, self.engine(), self.layout, s);
-        let row = |r| matrix.row(r);
-        let metadata = expansion::in_memory(expansion, matrix.rows(), row, len, parallel);
-        Ok(metadata)
-    }
-
-    #[cfg(feature = "rayon")]
-    fn compute(&self, blob: &[u8], symbol_size: usize) -> BlobMetadata {
-        let layout = self.layout;
-        let n = layout.n_shards;
-        let schedule = Schedule {
-            hasher: self.hasher,
-            engine: self.engine(),
-            layout,
-            symbol_size,
-        };
-
-        let matrix = MessageMatrix::new(blob, &layout, symbol_size);
-        let mut recovery = vec![0; layout.n_rows * layout.n_faulty * symbol_size];
-        let mut leaves = vec![ZERO_NODE; n * n];
-        let (systematic, non_systematic) = leaves.split_at_mut(layout.n_cols * n);
-        rayon::join(
-            || schedule.encode_rows(&matrix, &mut recovery),
-            || schedule.encode_columns(matrix.rows(), systematic),
-        );
-        drop(matrix);
-        let recovery_rows = Rows::new(&recovery, layout.n_faulty * symbol_size);
-        schedule.encode_columns(recovery_rows, non_systematic);
-        drop(recovery);
-
-        let (primary, secondary) = sliver_roots(self.hasher, &leaves, n);
-        drop(leaves);
-        expansion::metadata(self.hasher, &primary, &secondary, blob.len() as u64)
-    }
 }
 
 impl Default for BlobEncoder {
@@ -271,111 +201,6 @@ impl Default for BlobEncoder {
     fn default() -> Self {
         Self::mainnet()
     }
-}
-
-#[cfg(feature = "rayon")]
-/// Parameters shared by the encoding phases.
-#[derive(Clone, Copy)]
-struct Schedule {
-    hasher: Hasher,
-    engine: Engine,
-    layout: ShardLayout,
-    symbol_size: usize,
-}
-
-#[cfg(feature = "rayon")]
-impl Schedule {
-    /// Writes the `f` recovery symbols of every row of the message matrix to `recovery`, row
-    /// major.
-    fn encode_rows(self, matrix: &MessageMatrix<'_>, recovery: &mut [u8]) {
-        let Schedule {
-            engine,
-            layout,
-            symbol_size,
-            ..
-        } = self;
-        recovery
-            .par_chunks_mut(layout.n_faulty * symbol_size)
-            .enumerate()
-            .for_each_init(
-                || {
-                    let limit = layout.skew_limit();
-                    Encoder::new(engine, layout.n_cols, layout.n_faulty, symbol_size, limit)
-                },
-                |encoder, (row, out)| {
-                    let result = encoder.encode(matrix.row(row).chunks_exact(symbol_size));
-                    out.chunks_exact_mut(symbol_size)
-                        .zip(result.recovery_iter())
-                        .for_each(|(out, symbol)| out.copy_from_slice(symbol));
-                },
-            );
-    }
-
-    /// Encodes column `c` of `source` for every `n`-leaf chunk `c` of `leaves` and writes the
-    /// leaf hashes of all `n` symbols of the expanded column.
-    fn encode_columns(self, source: Rows<'_>, leaves: &mut [Digest]) {
-        let Schedule {
-            hasher,
-            engine,
-            layout,
-            symbol_size,
-        } = self;
-        let n = layout.n_shards;
-        leaves.par_chunks_mut(n).enumerate().for_each_init(
-            || {
-                let (rows, limit) = (layout.n_rows, layout.skew_limit());
-                let encoder = Encoder::new(engine, rows, n - rows, symbol_size, limit);
-                (encoder, MessageBuf::default())
-            },
-            |(encoder, messages), (col, leaves)| {
-                let mut symbols = messages.take();
-                symbols.extend(source.column(col, symbol_size));
-                let result = encoder.encode(symbols.iter().copied());
-                symbols.extend(result.recovery_iter());
-                hasher.hash_batch(LEAF_PREFIX, &symbols, leaves);
-                messages.put(symbols);
-            },
-        );
-    }
-}
-
-#[cfg(feature = "rayon")]
-/// Merkle roots of the rows (primary slivers) and columns of the column-major leaf matrix.
-fn sliver_roots(hasher: Hasher, leaves: &[Digest], n: usize) -> (Vec<Digest>, Vec<Digest>) {
-    let mut row_roots = vec![ZERO_NODE; n];
-    let mut column_roots = vec![ZERO_NODE; n];
-    rayon::join(
-        || {
-            row_roots
-                .par_chunks_mut(TREES_PER_TASK)
-                .enumerate()
-                .for_each_init(
-                    || (TreeScratch::default(), Vec::new()),
-                    |(scratch, rows), (task, roots)| {
-                        let first = task * TREES_PER_TASK;
-                        rows.clear();
-                        rows.resize(roots.len() * n, ZERO_NODE);
-                        for (col, column) in leaves.chunks_exact(n).enumerate() {
-                            rows[col..]
-                                .iter_mut()
-                                .step_by(n)
-                                .zip(&column[first..first + roots.len()])
-                                .for_each(|(out, leaf)| *out = *leaf);
-                        }
-                        merkle::roots(hasher, rows, n, roots, scratch);
-                    },
-                );
-        },
-        || {
-            column_roots
-                .par_chunks_mut(TREES_PER_TASK)
-                .zip(leaves.par_chunks(TREES_PER_TASK * n))
-                .for_each_init(TreeScratch::default, |scratch, (roots, columns)| {
-                    merkle::roots(hasher, columns, n, roots, scratch);
-                });
-        },
-    );
-    (row_roots, column_roots)
 }
 
 #[cfg(test)]
