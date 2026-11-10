@@ -23,14 +23,14 @@ use rayon::{ThreadPool, prelude::*};
 use crate::{
     Backend, BlobId, BlobMetadata, Error,
     blake2b::Hasher,
-    expansion::Expansion,
-    layout::{MessageMatrix, Rows, ShardLayout},
+    expansion::{self, Expansion},
+    layout::{MessageMatrix, ShardLayout},
     reed_solomon::Engine,
 };
 #[cfg(feature = "rayon")]
 use crate::{
     blake2b::{DIGEST_LEN, Digest},
-    expansion,
+    layout::Rows,
     merkle::{self, LEAF_PREFIX, TreeScratch},
     messages::MessageBuf,
     reed_solomon::Encoder,
@@ -212,25 +212,28 @@ impl BlobEncoder {
     /// rows of the parity columns as the only buffer.
     #[doc(hidden)]
     pub fn metadata_sequential(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
+        self.metadata_in_memory(blob, false)
+    }
+
+    /// The same as [`Self::metadata_sequential`] on the encoder's thread pool.
+    #[doc(hidden)]
+    #[cfg(feature = "rayon")]
+    pub fn metadata_parallel(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
+        let compute = || self.metadata_in_memory(blob, true);
+        match &self.pool {
+            Some(pool) => pool.install(compute),
+            None => compute(),
+        }
+    }
+
+    fn metadata_in_memory(&self, blob: &[u8], parallel: bool) -> Result<BlobMetadata, Error> {
         let len = blob.len() as u64;
         let s = usize::from(self.symbol_size(len)?.get());
-        let layout = self.layout;
-        let (rows, cols, f) = (layout.n_rows, layout.n_cols, layout.n_faulty);
-        let matrix = MessageMatrix::new(blob, &layout, s);
-        let mut expansion = Expansion::new(self.hasher, self.engine(), layout, s, None);
-        for col in 0..cols {
-            expansion.push_column(matrix.rows().column(col, s));
-        }
-        let mut recovery = vec![0; rows * f * s];
-        for (row, out) in recovery.chunks_exact_mut(f * s).enumerate() {
-            expansion.encode_row(matrix.row(row), 0..f, out);
-        }
-        drop(matrix);
-        let recovery_rows = Rows::new(&recovery, f * s);
-        for col in 0..f {
-            expansion.push_column(recovery_rows.column(col, s));
-        }
-        Ok(expansion.finish(len))
+        let matrix = MessageMatrix::new(blob, &self.layout, s);
+        let expansion = Expansion::new(self.hasher, self.engine(), self.layout, s);
+        let row = |r| matrix.row(r);
+        let metadata = expansion::in_memory(expansion, matrix.rows(), row, len, parallel);
+        Ok(metadata)
     }
 
     #[cfg(feature = "rayon")]

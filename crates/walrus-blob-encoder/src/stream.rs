@@ -163,13 +163,7 @@ impl StreamEncoder {
             len,
             layout,
             symbol_size,
-            expansion: Expansion::new(
-                encoder.hasher(),
-                encoder.engine(),
-                layout,
-                symbol_size,
-                None,
-            ),
+            expansion: Expansion::new(encoder.hasher(), encoder.engine(), layout, symbol_size),
             stats: StreamStats {
                 symbol_size,
                 batch_columns,
