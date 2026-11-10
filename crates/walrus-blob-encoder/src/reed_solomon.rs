@@ -19,40 +19,9 @@ pub(crate) fn supports(original: usize, recovery: usize) -> bool {
     ReedSolomonEncoder::supports(original, recovery)
 }
 
-/// The best `reed-solomon-simd` engine: the one the target statically supports, or, with the
-/// `runtime-detection` feature and below AVX2, the one detected at runtime.
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    target_feature = "avx2"
-))]
-type SimdEngine = engine::Avx2;
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    not(target_feature = "avx2"),
-    feature = "runtime-detection"
-))]
+/// The `reed-solomon-simd` SIMD engine, chosen at compile time: [`engine::Wide`] when the target
+/// enables SSSE3, WebAssembly `simd128` or NEON, otherwise [`NoSimd`].
 type SimdEngine = engine::DefaultEngine;
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    not(target_feature = "avx2"),
-    not(feature = "runtime-detection"),
-    target_feature = "ssse3"
-))]
-type SimdEngine = engine::Ssse3;
-#[cfg(target_arch = "aarch64")]
-type SimdEngine = engine::Neon;
-#[cfg(not(any(
-    target_arch = "aarch64",
-    all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        any(
-            target_feature = "avx2",
-            target_feature = "ssse3",
-            feature = "runtime-detection"
-        )
-    )
-)))]
-type SimdEngine = NoSimd;
 
 /// Engine choice: portable code only, the best `reed-solomon-simd` engine, or this crate's
 /// AVX-512 engine where available. All engines produce identical recovery shards.
