@@ -15,6 +15,8 @@
 //! and columns are independent, and the row trees are split into groups of rows that receive
 //! each group of columns' leaves in order. The result does not depend on the number of threads.
 
+#[cfg(feature = "rayon")]
+use std::sync::Mutex;
 use std::{ops::Range, slice};
 
 #[cfg(feature = "rayon")]
@@ -169,6 +171,9 @@ pub(crate) struct Expansion {
     column_roots: Vec<Digest>,
     leaves: Vec<Digest>,
     row_encodes: u64,
+    /// One worker per thread of the rayon pool, created on first use.
+    #[cfg(feature = "rayon")]
+    workers: Vec<Mutex<Option<Worker>>>,
 }
 
 impl Expansion {
@@ -190,6 +195,8 @@ impl Expansion {
             column_roots: Vec::with_capacity(n),
             leaves: vec![ZERO_NODE; n],
             row_encodes: 0,
+            #[cfg(feature = "rayon")]
+            workers: Vec::new(),
         }
     }
 
@@ -250,8 +257,26 @@ impl Expansion {
 
 #[cfg(feature = "rayon")]
 impl Expansion {
-    fn new_worker(&self) -> Worker {
-        Worker::new(self.hasher, self.engine, self.layout, self.symbol_size)
+    /// Makes [`Self::with_worker`] serve every thread of the current rayon pool.
+    fn prepare_workers(&mut self) {
+        let threads = rayon::current_num_threads();
+        if self.workers.len() != threads {
+            self.workers = (0..threads).map(|_| Mutex::new(None)).collect();
+        }
+    }
+
+    /// Runs `f` with the worker of the current thread, creating it on first use. A rayon
+    /// thread runs one task at a time and these tasks do not wait for others, so the lock is
+    /// never contended.
+    fn with_worker<R>(&self, f: impl FnOnce(&mut Worker) -> R) -> R {
+        let index = rayon::current_thread_index().unwrap_or(0) % self.workers.len();
+        let mut slot = self.workers[index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let worker = slot.get_or_insert_with(|| {
+            Worker::new(self.hasher, self.engine, self.layout, self.symbol_size)
+        });
+        f(worker)
     }
 
     /// [`Self::encode_row`] for every row of `rows`, writing all `n_faulty` recovery symbols of
@@ -263,10 +288,13 @@ impl Expansion {
     ) {
         let f = self.layout.n_faulty;
         let row_len = f * self.symbol_size;
-        out.par_chunks_mut(row_len).enumerate().for_each_init(
-            || self.new_worker(),
-            |worker, (row, out)| worker.encode_row(rows(row), 0..f, out),
-        );
+        self.prepare_workers();
+        let this = &*self;
+        out.par_chunks_mut(row_len)
+            .enumerate()
+            .for_each(|(row, out)| {
+                this.with_worker(|worker| worker.encode_row(rows(row), 0..f, out));
+            });
         self.row_encodes += (out.len() / row_len) as u64;
     }
 
@@ -294,21 +322,21 @@ impl Expansion {
                 })
                 .collect();
         }
+        self.prepare_workers();
         let mut leaves = vec![ZERO_NODE; n * COLUMN_GROUP.min(count)];
         let mut roots = vec![ZERO_NODE; COLUMN_GROUP.min(count)];
         for first in (0..count).step_by(COLUMN_GROUP) {
             let group = COLUMN_GROUP.min(count - first);
             let (leaves, roots) = (&mut leaves[..group * n], &mut roots[..group]);
+            let this = &*self;
             leaves
                 .par_chunks_mut(n)
                 .zip(roots.par_iter_mut())
                 .enumerate()
-                .for_each_init(
-                    || self.new_worker(),
-                    |worker, (column, (leaves, root))| {
-                        *root = worker.encode_column(source(first + column), leaves);
-                    },
-                );
+                .for_each(|(column, (leaves, root))| {
+                    *root = this
+                        .with_worker(|worker| worker.encode_column(source(first + column), leaves));
+                });
             self.column_roots.extend_from_slice(roots);
             let hasher = self.hasher;
             let leaves = &*leaves;
