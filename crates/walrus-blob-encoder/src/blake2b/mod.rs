@@ -41,6 +41,8 @@ mod scalar;
 mod sse41;
 #[cfg(test)]
 mod tests;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm;
 
 use core::fmt;
 use core::str::FromStr;
@@ -99,6 +101,8 @@ pub enum Backend {
     Neon,
     /// x86-64 SSE4.1, two messages at a time.
     Sse41,
+    /// WebAssembly `simd128`, two messages at a time. Only available in modules built with it.
+    Simd128,
 }
 
 impl Backend {
@@ -108,6 +112,7 @@ impl Backend {
         Backend::Avx2,
         Backend::Neon,
         Backend::Sse41,
+        Backend::Simd128,
         Backend::Scalar,
     ];
 
@@ -161,6 +166,7 @@ impl Backend {
                 target_feature = "neon"
             )),
             Backend::Sse41 => cfg!(all(target_arch = "x86_64", target_feature = "sse4.1")),
+            Backend::Simd128 => cfg!(all(target_arch = "wasm32", target_feature = "simd128")),
         }
     }
 
@@ -192,6 +198,7 @@ impl Backend {
             Backend::Avx512 => "avx512",
             Backend::Neon => "neon",
             Backend::Sse41 => "sse41",
+            Backend::Simd128 => "simd128",
         }
     }
 }
@@ -293,6 +300,8 @@ impl Hasher {
                 any(feature = "runtime-detection", target_feature = "sse4.1")
             ))]
             Backend::Sse41 => sse41::hash_batch(self, prefix, messages, out),
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            Backend::Simd128 => wasm::hash_batch(prefix, messages, out),
             _ => unreachable!("a Hasher only holds available backends"),
         }
     }

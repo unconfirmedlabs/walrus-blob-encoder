@@ -175,6 +175,8 @@ fn backend_selection() {
     }
     #[cfg(not(target_arch = "aarch64"))]
     assert!(!Backend::Neon.is_available());
+    #[cfg(not(target_arch = "wasm32"))]
+    assert!(!Backend::Simd128.is_available());
 }
 
 #[test]
