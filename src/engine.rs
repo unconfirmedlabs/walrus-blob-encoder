@@ -39,6 +39,8 @@ pub use self::{
     engine_default::DefaultEngine, engine_naive::Naive, engine_nosimd::NoSimd, shards::ShardsRefMut,
 };
 
+pub use self::engine_wide::Wide;
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub use self::{engine_avx2::Avx2, engine_ssse3::Ssse3};
 
@@ -48,6 +50,7 @@ pub use self::engine_neon::Neon;
 mod engine_default;
 mod engine_naive;
 mod engine_nosimd;
+mod engine_wide;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod engine_avx2;

@@ -19,10 +19,8 @@ include = [
 
 [dependencies]
 fixedbitset = { version = "0.5.7", default-features = false }
+wide = { version = "1.7.1", default-features = false }
 once_cell = { version = "1.21.3", default-features = false, features = ["alloc", "race"] }
-
-[target.'cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
-cpufeatures = "0.2.17"
 
 [build-dependencies]
 readme-rustdocifier = "0.1.1"

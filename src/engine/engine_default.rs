@@ -1,54 +1,49 @@
-use crate::engine::{Engine, GfElement, NoSimd, ShardsRefMut, GF_ORDER};
-#[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
+use crate::engine::{Engine, GfElement, ShardsRefMut, GF_ORDER};
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use crate::engine::{Avx2, Ssse3};
+// The engine is chosen at compile time from the enabled target features.
+// `Wide` needs a 16-byte table lookup instruction to be worthwhile: SSSE3 on
+// x86(-64), `simd128` on WebAssembly, NEON on AArch64. Without one, `NoSimd`
+// is faster than `Wide`'s scalar fallback.
+#[cfg(any(
+    target_feature = "ssse3",
+    target_feature = "simd128",
+    all(target_arch = "aarch64", target_feature = "neon"),
+))]
+type Inner = crate::engine::Wide;
 
-#[cfg(target_arch = "aarch64")]
-use crate::engine::Neon;
+#[cfg(not(any(
+    target_feature = "ssse3",
+    target_feature = "simd128",
+    all(target_arch = "aarch64", target_feature = "neon"),
+)))]
+type Inner = crate::engine::NoSimd;
 
 // ======================================================================
 // DefaultEngine - PUBLIC
 
-/// [`Engine`] that at runtime selects the best Engine.
-pub struct DefaultEngine(Box<dyn Engine + Send + Sync>);
+/// [`Engine`] chosen at compile time: [`Wide`] when the target has SSSE3,
+/// WebAssembly `simd128` or NEON enabled, otherwise [`NoSimd`].
+///
+/// There is no runtime CPU detection. Enable the target feature when
+/// building (for example `-C target-feature=+ssse3` or `+simd128`) to get
+/// the SIMD engine.
+///
+/// [`Wide`]: crate::engine::Wide
+/// [`NoSimd`]: crate::engine::NoSimd
+pub struct DefaultEngine(Inner);
 
 impl DefaultEngine {
-    /// Creates new [`DefaultEngine`] by chosing and initializing the underlying engine.
-    ///
-    /// On x86(-64) the engine is chosen in the following order of preference:
-    /// 1. [`Avx2`]
-    /// 2. [`Ssse3`]
-    /// 3. [`NoSimd`]
-    ///
-    /// On `AArch64` the engine is chosen in the following order of preference:
-    /// 1. [`Neon`]
-    /// 2. [`NoSimd`]
+    /// Creates new [`DefaultEngine`], initializing the underlying engine.
     pub fn new() -> Self {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            cpufeatures::new!(has_avx2, "avx2");
-            if has_avx2::get() {
-                return Self(Box::new(Avx2::new()));
-            }
-
-            cpufeatures::new!(has_ssse3, "ssse3");
-            if has_ssse3::get() {
-                return Self(Box::new(Ssse3::new()));
-            }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            cpufeatures::new!(has_neon, "neon");
-            if has_neon::get() {
-                return Self(Box::new(Neon::new()));
-            }
-        }
-
-        Self(Box::new(NoSimd::new()))
+        Self(Inner::new())
     }
+
+    /// Whether the SIMD engine was selected at compile time.
+    pub const SIMD: bool = cfg!(any(
+        target_feature = "ssse3",
+        target_feature = "simd128",
+        all(target_arch = "aarch64", target_feature = "neon"),
+    ));
 }
 
 // ======================================================================
@@ -91,27 +86,6 @@ impl Engine for DefaultEngine {
     }
 
     fn eval_poly(erasures: &mut [GfElement; GF_ORDER], truncated_size: usize) {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            cpufeatures::new!(has_avx2, "avx2");
-            if has_avx2::get() {
-                return Avx2::eval_poly(erasures, truncated_size);
-            }
-
-            cpufeatures::new!(has_ssse3, "ssse3");
-            if has_ssse3::get() {
-                return Ssse3::eval_poly(erasures, truncated_size);
-            }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            cpufeatures::new!(has_neon, "neon");
-            if has_neon::get() {
-                return Neon::eval_poly(erasures, truncated_size);
-            }
-        }
-
-        NoSimd::eval_poly(erasures, truncated_size);
+        Inner::eval_poly(erasures, truncated_size);
     }
 }

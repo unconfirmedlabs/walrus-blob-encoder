@@ -38,3 +38,11 @@
 - `no_std` support when new `std` feature is disabled (`std` feature is enabled by default).
 - Require Rust 1.82.0 or newer
 - Implement trait `ExactSizeIterator` for `EncoderResult` and `DecoderResult` iterators.
+
+## UNRELEASED (misofm fork)
+- `Wide` engine: portable 128-bit SIMD through the `wide` crate (SSSE3,
+  WebAssembly `simd128`, NEON), selected at compile time.
+- `DefaultEngine` no longer detects CPU features at runtime: it is `Wide` when
+  the target has SSSE3, `simd128` or NEON enabled, otherwise `NoSimd`. The
+  `cpufeatures` dependency is removed. `Avx2`, `Ssse3` and `Neon` remain
+  available as explicit engines.

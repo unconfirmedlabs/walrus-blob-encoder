@@ -1,7 +1,7 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use reed_solomon_simd::engine::{DefaultEngine, Engine, Naive, NoSimd};
+use reed_solomon_simd::engine::{DefaultEngine, Engine, Naive, NoSimd, Wide};
 use reed_solomon_simd::rate::{
     DefaultRateDecoder, DefaultRateEncoder, HighRate, LowRate, Rate, RateDecoder, RateEncoder,
 };
@@ -195,6 +195,16 @@ fn engine_naive() -> Result<(), Error> {
     compare_to_nosimd::<Naive>(128, 32, 64)
 }
 
+#[test]
+fn wide() -> Result<(), Error> {
+    compare_to_nosimd::<Wide>(128, 32, 64)
+}
+
+#[test]
+fn default_engine() -> Result<(), Error> {
+    compare_to_nosimd::<DefaultEngine>(128, 32, 64)
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[test]
 fn x86_ssse3() -> Result<(), Error> {
@@ -233,6 +243,20 @@ fn aarch64_neon() -> Result<(), Error> {
 //
 // Takes a bit longer. Runs much faster in release mode:
 // cargo test --release -- --ignored
+
+#[test]
+#[ignore]
+fn wide_random_roundtrips() -> Result<(), Error> {
+    let mut rng = ChaCha8Rng::from_seed([0; 32]);
+
+    for _ in 0..5 {
+        let (original_count, recovery_count) = random_shard_count(&mut rng);
+        let chunk_count: usize = rng.random_range(1..=3);
+        compare_to_nosimd::<Wide>(original_count, recovery_count, chunk_count * 64)?;
+    }
+
+    Ok(())
+}
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[test]
