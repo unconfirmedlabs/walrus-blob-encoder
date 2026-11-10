@@ -20,15 +20,14 @@
 //! matrix products (`vgf2p8affineqb`). The FFT and IFFT apply both butterfly layers of a radix-4
 //! step to a chunk while it is in registers.
 
-use core::arch::x86_64::{
-    __m512i, _mm_loadu_si128, _mm512_and_si512, _mm512_broadcast_i32x4,
-    _mm512_gf2p8affine_epi64_epi8, _mm512_loadu_si512, _mm512_mask_broadcast_i32x4,
-    _mm512_set_epi64, _mm512_set1_epi8, _mm512_setzero_si512, _mm512_shuffle_epi8,
-    _mm512_shuffle_i64x2, _mm512_srli_epi64, _mm512_storeu_si512, _mm512_ternarylogic_epi64,
-    _mm512_xor_si512,
-};
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec};
+use core::arch::x86_64::{
+    __m512i, _mm512_and_si512, _mm512_broadcast_i32x4, _mm512_gf2p8affine_epi64_epi8,
+    _mm512_loadu_si512, _mm512_mask_broadcast_i32x4, _mm512_set1_epi8, _mm512_set_epi64,
+    _mm512_setzero_si512, _mm512_shuffle_epi8, _mm512_shuffle_i64x2, _mm512_srli_epi64,
+    _mm512_storeu_si512, _mm512_ternarylogic_epi64, _mm512_xor_si512, _mm_loadu_si128,
+};
 use core::iter::zip;
 
 use once_cell::race::OnceBox;
@@ -642,13 +641,15 @@ mod tests {
 
     /// `(original, recovery)` of Walrus for `n` shards, and `(n - 2f, 2f)`, with `f = (n - 1) / 3`.
     fn parameter_sets() -> Vec<(usize, usize)> {
-        [4, 5, 7, 10, 13, 31, 64, 100, 101, 333, 999, 1000, 1001, 2000]
-            .into_iter()
-            .flat_map(|n| {
-                let f = (n - 1) / 3;
-                [(n - f, f), (n - 2 * f, 2 * f)]
-            })
-            .collect()
+        [
+            4, 5, 7, 10, 13, 31, 64, 100, 101, 333, 999, 1000, 1001, 2000,
+        ]
+        .into_iter()
+        .flat_map(|n| {
+            let f = (n - 1) / 3;
+            [(n - f, f), (n - 2 * f, 2 * f)]
+        })
+        .collect()
     }
 
     #[test]
