@@ -10,12 +10,8 @@ use core::iter::zip;
 
 /// Evaluate Polynomial using Fast Walsh-Hadamard Transform (FWHT).
 ///
-/// This function is designed to be inlined and be compiled with SIMD
-/// features enabled within an Engine's implementation of `eval_poly`.
-///
-/// See [`Avx2`] for an example on how to do this.
-///
-/// [`Avx2`]: crate::engine::Avx2
+/// This function is designed to be inlined into an Engine's
+/// implementation of `eval_poly`.
 #[inline(always)]
 pub fn eval_poly(erasures: &mut [GfElement; GF_ORDER], truncated_size: usize) {
     let log_walsh = tables::get_log_walsh();

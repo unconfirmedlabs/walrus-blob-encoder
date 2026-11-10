@@ -2,7 +2,7 @@ use fixedbitset::FixedBitSet;
 use rand::Rng;
 
 use reed_solomon_simd::{
-    engine::{Engine, Naive, NoSimd, GF_ORDER},
+    engine::{Engine, NoSimd, Wide, GF_ORDER},
     rate::{
         DecoderWork, DefaultRate, EncoderWork, HighRate, LowRate, Rate, RateDecoder, RateEncoder,
     },
@@ -38,7 +38,7 @@ macro_rules! roundtrip {
         $encoder_work: expr,
         $decoder_work: expr $(,)?
     ) => {
-        let recovery_naive = roundtrip::<_, $Rate<_>>(
+        let recovery_wide = roundtrip::<_, $Rate<_>>(
             $original,
             $original_count,
             $recovery_count,
@@ -46,7 +46,7 @@ macro_rules! roundtrip {
             $loss_indexes,
             $encoder_work,
             $decoder_work,
-            Naive::new,
+            Wide::new,
         )
         .unwrap();
 
@@ -62,7 +62,7 @@ macro_rules! roundtrip {
         )
         .unwrap();
 
-        assert_eq!(recovery_naive, recovery_nosimd);
+        assert_eq!(recovery_wide, recovery_nosimd);
     };
 }
 

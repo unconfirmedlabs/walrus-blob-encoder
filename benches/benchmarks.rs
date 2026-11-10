@@ -5,18 +5,12 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use reed_solomon_simd::{
-    engine::{DefaultEngine, Engine, Naive, NoSimd, ShardsRefMut, GF_ORDER},
+    engine::{DefaultEngine, Engine, NoSimd, ShardsRefMut, Wide, GF_ORDER},
     rate::{
         HighRateDecoder, HighRateEncoder, LowRateDecoder, LowRateEncoder, RateDecoder, RateEncoder,
     },
     ReedSolomonDecoder, ReedSolomonEncoder,
 };
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use reed_solomon_simd::engine::{Avx2, Ssse3};
-
-#[cfg(target_arch = "aarch64")]
-use reed_solomon_simd::engine::Neon;
 
 // ======================================================================
 // CONST
@@ -150,7 +144,6 @@ fn benchmarks_main(c: &mut Criterion) {
 // BENCHMARKS - RATE
 
 fn benchmarks_rate(c: &mut Criterion) {
-    // benchmarks_rate_one(c, "rate-Naive", Naive::new);
     benchmarks_rate_one(c, "rate", DefaultEngine::new);
 }
 
@@ -301,25 +294,8 @@ fn benchmarks_rate_one<E: Engine>(c: &mut Criterion, name: &str, new_engine: fn(
 // BENCHMARKS - ENGINES
 
 fn benchmarks_engine(c: &mut Criterion) {
-    benchmarks_engine_one(c, "engine-Naive", Naive::new());
     benchmarks_engine_one(c, "engine-NoSimd", NoSimd::new());
-
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("ssse3") {
-            benchmarks_engine_one(c, "engine-Ssse3", Ssse3::new());
-        }
-        if is_x86_feature_detected!("avx2") {
-            benchmarks_engine_one(c, "engine-Avx2", Avx2::new());
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            benchmarks_engine_one(c, "engine-Neon", Neon::new());
-        }
-    }
+    benchmarks_engine_one(c, "engine-Wide", Wide::new());
 }
 
 fn benchmarks_engine_one<E: Engine>(c: &mut Criterion, name: &str, engine: E) {

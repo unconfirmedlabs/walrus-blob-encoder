@@ -10,12 +10,11 @@
 //! | [`Log`]      | 128 kiB | yes              | yes              | all                |
 //! | [`LogWalsh`] | 128 kiB | -                | yes              | all                |
 //! | [`Mul16`]    | 8 MiB   | yes              | yes              | [`NoSimd`]         |
-//! | [`Mul128`]   | 8 MiB   | yes              | yes              | [`Avx2`] [`Ssse3`] |
+//! | [`Mul128`]   | 8 MiB   | yes              | yes              | [`Wide`]           |
 //! | [`Skew`]     | 128 kiB | yes              | yes              | all                |
 //!
 //! [`NoSimd`]: crate::engine::NoSimd
-//! [`Avx2`]: crate::engine::Avx2
-//! [`Ssse3`]: crate::engine::Ssse3
+//! [`Wide`]: crate::engine::Wide
 //! [`Engine`]: crate::engine
 //!
 
@@ -35,24 +34,19 @@ use crate::engine::{
 // ======================================================================
 // TYPE ALIASES - PUBLIC
 
-/// Used by [`Naive`] engine for multiplications
-/// and by all [`Engine`]:s to initialize other tables.
+/// Used by all [`Engine`]:s to initialize other tables.
 ///
-/// [`Naive`]: crate::engine::Naive
 /// [`Engine`]: crate::engine
 pub type Exp = [GfElement; GF_ORDER];
 
-/// Used by [`Naive`] engine for multiplications
-/// and by all [`Engine`]:s to initialize other tables.
+/// Used by all [`Engine`]:s to initialize other tables.
 ///
-/// [`Naive`]: crate::engine::Naive
 /// [`Engine`]: crate::engine
 pub type Log = [GfElement; GF_ORDER];
 
-/// Used by [`Avx2`] and [`Ssse3`] engines for multiplications.
+/// Used by the [`Wide`] engine for multiplications.
 ///
-/// [`Avx2`]: crate::engine::Avx2
-/// [`Ssse3`]: crate::engine::Ssse3
+/// [`Wide`]: crate::engine::Wide
 pub type Mul128 = [Multiply128lutT; GF_ORDER];
 
 /// Elements of the Mul128 table

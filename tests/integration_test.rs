@@ -1,17 +1,11 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use reed_solomon_simd::engine::{DefaultEngine, Engine, Naive, NoSimd, Wide};
+use reed_solomon_simd::engine::{DefaultEngine, Engine, NoSimd, Wide};
 use reed_solomon_simd::rate::{
     DefaultRateDecoder, DefaultRateEncoder, HighRate, LowRate, Rate, RateDecoder, RateEncoder,
 };
 use reed_solomon_simd::Error;
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use reed_solomon_simd::engine::{Avx2, Ssse3};
-
-#[cfg(target_arch = "aarch64")]
-use reed_solomon_simd::engine::Neon;
 
 // ======================================================================
 // TESTS - HELPERS
@@ -191,11 +185,6 @@ fn low_rate() -> Result<(), Error> {
 }
 
 #[test]
-fn engine_naive() -> Result<(), Error> {
-    compare_to_nosimd::<Naive>(128, 32, 64)
-}
-
-#[test]
 fn wide() -> Result<(), Error> {
     compare_to_nosimd::<Wide>(128, 32, 64)
 }
@@ -203,39 +192,6 @@ fn wide() -> Result<(), Error> {
 #[test]
 fn default_engine() -> Result<(), Error> {
     compare_to_nosimd::<DefaultEngine>(128, 32, 64)
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
-fn x86_ssse3() -> Result<(), Error> {
-    if is_x86_feature_detected!("ssse3") {
-        compare_to_nosimd::<Ssse3>(128, 32, 64)
-    } else {
-        eprintln!("Skipping test: SSSE3 not supported on this processor.");
-        Ok(())
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
-fn x86_avx2() -> Result<(), Error> {
-    if is_x86_feature_detected!("avx2") {
-        compare_to_nosimd::<Avx2>(128, 32, 64)
-    } else {
-        eprintln!("Skipping test: AVX2 not supported on this processor.");
-        Ok(())
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[test]
-fn aarch64_neon() -> Result<(), Error> {
-    if std::arch::is_aarch64_feature_detected!("neon") {
-        compare_to_nosimd::<Neon>(128, 32, 64)
-    } else {
-        eprintln!("Skipping test: NEON not supported on this processor.");
-        Ok(())
-    }
 }
 
 // ======================================================================
@@ -253,66 +209,6 @@ fn wide_random_roundtrips() -> Result<(), Error> {
         let (original_count, recovery_count) = random_shard_count(&mut rng);
         let chunk_count: usize = rng.random_range(1..=3);
         compare_to_nosimd::<Wide>(original_count, recovery_count, chunk_count * 64)?;
-    }
-
-    Ok(())
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
-#[ignore]
-fn x86_ssse3_random_roundtrips() -> Result<(), Error> {
-    if !is_x86_feature_detected!("ssse3") {
-        eprintln!("Skipping test: SSSE3 not supported on this processor.");
-        return Ok(());
-    }
-
-    let mut rng = ChaCha8Rng::from_seed([0; 32]);
-
-    for _ in 0..5 {
-        let (original_count, recovery_count) = random_shard_count(&mut rng);
-        let chunk_count: usize = rng.random_range(1..=3);
-        compare_to_nosimd::<Ssse3>(original_count, recovery_count, chunk_count * 64)?;
-    }
-
-    Ok(())
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
-#[ignore]
-fn x86_avx2_random_roundtrips() -> Result<(), Error> {
-    if !is_x86_feature_detected!("avx2") {
-        eprintln!("Skipping test: AVX2 not supported on this processor.");
-        return Ok(());
-    }
-
-    let mut rng = ChaCha8Rng::from_seed([0; 32]);
-
-    for _ in 0..5 {
-        let (original_count, recovery_count) = random_shard_count(&mut rng);
-        let chunk_count: usize = rng.random_range(1..=3);
-        compare_to_nosimd::<Avx2>(original_count, recovery_count, chunk_count * 64)?;
-    }
-
-    Ok(())
-}
-
-#[cfg(target_arch = "aarch64")]
-#[test]
-#[ignore]
-fn aarch64_neon_random_roundtrips() -> Result<(), Error> {
-    if !std::arch::is_aarch64_feature_detected!("neon") {
-        eprintln!("Skipping test: NEON not supported on this processor.");
-        return Ok(());
-    }
-
-    let mut rng = ChaCha8Rng::from_seed([0; 32]);
-
-    for _ in 0..5 {
-        let (original_count, recovery_count) = random_shard_count(&mut rng);
-        let chunk_count: usize = rng.random_range(1..=3);
-        compare_to_nosimd::<Neon>(original_count, recovery_count, chunk_count * 64)?;
     }
 
     Ok(())

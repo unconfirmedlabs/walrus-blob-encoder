@@ -4,8 +4,8 @@ Reed-Solomon erasure coding based on [Leopard-RS], featuring:
 
 - `O(n log n)` complexity.
 - Entirely written in Rust.
-- Runtime selection of best SIMD implementation on both AArch64 (Neon) and x86(-64) (SSSE3 and AVX2) with
-fallback to plain Rust.
+- Portable SIMD through the `wide` crate on x86(-64) (SSSE3), AArch64 (Neon) and WebAssembly (`simd128`),
+selected at compile time from the enabled target features, with fallback to plain Rust.
 - Any combination of 1 - 32768 original shards with 1 - 32768 recovery shards.
 - Up to 65535 original or recovery shards is also possible with following limitations:
 
@@ -189,7 +189,7 @@ Use `cargo test -- --ignored` to run those.
 
 ## Safety
 
-The only use of `unsafe` in this crate is to allow for target specific optimizations in [`Ssse3`], [`Avx2`] and [`Neon`].
+This crate contains no `unsafe` code. SIMD is provided by the `wide` crate.
 
 ## Compatibility
 
@@ -203,11 +203,7 @@ is based on [Leopard-RS] by Christopher A. Taylor.
 [Leopard-RS]: https://github.com/catid/leopard
 [reed-solomon-simd]: https://github.com/AndersTrier/reed-solomon-simd
 
-[`Naive`]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/engine/struct.Naive.html
 [`NoSimd`]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/engine/struct.NoSimd.html
-[`Ssse3`]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/engine/struct.Ssse3.html
-[`Avx2`]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/engine/struct.Avx2.html
-[`Neon`]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/engine/struct.Neon.html
 
 [`ReedSolomonEncoder`]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/struct.ReedSolomonEncoder.html
 [RSE::add_original_shard]: https://docs.rs/reed-solomon-simd/3.1.0/reed_solomon_simd/struct.ReedSolomonEncoder.html#method.add_original_shard

@@ -186,7 +186,7 @@ macro_rules! roundtrip_single {
      $seed: expr $(,)?
     ) => {
         crate::test_util::roundtrip_single::<$Rate<_>, _, _>(
-            crate::engine::Naive::new,
+            crate::engine::Wide::new,
             $original_count,
             $recovery_count,
             $shard_bytes,
@@ -235,11 +235,11 @@ macro_rules! roundtrip_two_rounds {
             $seed_b: expr $(,)?
         ) $(,)?
     ) => {
-        use crate::engine::{Naive, NoSimd};
+        use crate::engine::{NoSimd, Wide};
 
         roundtrip_two_rounds_inner!(
             $Rate,
-            Naive,
+            Wide,
             $explicit_reset,
             (
                 $original_count_a,

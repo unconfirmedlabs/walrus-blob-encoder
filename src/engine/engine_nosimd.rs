@@ -319,7 +319,7 @@ impl NoSimd {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::{Engine, Naive, NoSimd};
+    use crate::engine::{Engine, NoSimd, Wide};
 
     #[cfg(not(feature = "std"))]
     use alloc::vec;
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn mul() {
-        let naive = Naive::default();
+        let wide = Wide::default();
         let nosimd = NoSimd::default();
 
         let mut rng = ChaCha8Rng::from_seed([0; 32]);
@@ -336,14 +336,14 @@ mod tests {
         for shard_chunks in 0..6 {
             let mut data_nosimd = vec![[0; 64]; shard_chunks];
             rng.fill(data_nosimd.as_flattened_mut());
-            let mut data_naive = data_nosimd.clone();
+            let mut data_wide = data_nosimd.clone();
 
             let log_m = rng.random();
 
             nosimd.mul(&mut data_nosimd, log_m);
-            naive.mul(&mut data_naive, log_m);
+            wide.mul(&mut data_wide, log_m);
 
-            assert_eq!(data_nosimd, data_naive);
+            assert_eq!(data_nosimd, data_wide);
         }
     }
 }

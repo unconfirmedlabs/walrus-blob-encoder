@@ -107,13 +107,9 @@ pub struct ShardsRefMut<'a> {
 impl<'a> ShardsRefMut<'a> {
     /// Returns mutable references to shards at `pos` and `pos + dist`.
     ///
-    /// See source code of [`Naive::fft`] for an example.
-    ///
     /// # Panics
     ///
     /// If `dist` is `0`.
-    ///
-    /// [`Naive::fft`]: crate::engine::Naive#method.fft
     pub fn dist2_mut(
         &mut self,
         mut pos: usize,

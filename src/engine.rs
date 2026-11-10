@@ -12,19 +12,15 @@
 //! An [`Engine`] is an implementation of basic low-level algorithms
 //! needed for Reed-Solomon encoding/decoding.
 //!
-//! - [`Naive`]
-//!     - Simple reference implementation.
 //! - [`NoSimd`]
 //!     - Basic optimized engine without SIMD so that it works on all CPUs.
-//! - [`Avx2`]
-//!     - Optimized engine that takes advantage of the x86(-64) AVX2 SIMD instructions.
-//! - [`Ssse3`]
-//!     - Optimized engine that takes advantage of the x86(-64) SSSE3 SIMD instructions.
-//! - [`Neon`]
-//!     - Optimized engine that takes advantage of the `AArch64` Neon SIMD instructions.
+//! - [`Wide`]
+//!     - Optimized engine using portable 128-bit SIMD: SSSE3 on x86(-64),
+//!       `simd128` on WebAssembly, Neon on `AArch64`.
 //! - [`DefaultEngine`]
 //!     - Default engine which is used when no specific engine is given.
-//!     - Automatically selects best engine at runtime.
+//!     - [`Wide`] when the build enables one of those target features,
+//!       otherwise [`NoSimd`]. Chosen at compile time.
 //!
 //! [simple usage]: crate#simple-usage
 //! [basic usage]: crate#basic-usage
@@ -36,29 +32,12 @@ pub(crate) use self::shards::Shards;
 pub(crate) use utils::{fft_skew_end, formal_derivative, ifft_skew_end, xor_within};
 
 pub use self::{
-    engine_default::DefaultEngine, engine_naive::Naive, engine_nosimd::NoSimd, shards::ShardsRefMut,
+    engine_default::DefaultEngine, engine_nosimd::NoSimd, engine_wide::Wide, shards::ShardsRefMut,
 };
 
-pub use self::engine_wide::Wide;
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use self::{engine_avx2::Avx2, engine_ssse3::Ssse3};
-
-#[cfg(target_arch = "aarch64")]
-pub use self::engine_neon::Neon;
-
 mod engine_default;
-mod engine_naive;
 mod engine_nosimd;
 mod engine_wide;
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-mod engine_avx2;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-mod engine_ssse3;
-
-#[cfg(target_arch = "aarch64")]
-mod engine_neon;
 
 mod fwht;
 mod shards;
@@ -101,9 +80,6 @@ pub type GfElement = u16;
 ///
 /// This is the trait you would implement to provide SIMD support
 /// for a CPU architecture not already provided.
-///
-/// [`Naive`] engine is provided for those who want to
-/// study the source code to understand [`Engine`].
 pub trait Engine {
     // ============================================================
     // REQUIRED

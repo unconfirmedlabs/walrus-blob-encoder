@@ -44,5 +44,9 @@
   WebAssembly `simd128`, NEON), selected at compile time.
 - `DefaultEngine` no longer detects CPU features at runtime: it is `Wide` when
   the target has SSSE3, `simd128` or NEON enabled, otherwise `NoSimd`. The
-  `cpufeatures` dependency is removed. `Avx2`, `Ssse3` and `Neon` remain
-  available as explicit engines.
+  `cpufeatures` dependency is removed.
+- Removed the `Avx2`, `Ssse3`, `Neon` and `Naive` engines. The crate has no
+  `unsafe` code. The known-answer roundtrip tests that ran on `Naive` now run
+  on `Wide`.
+- Removed `examples/quick-comparison.rs` and the four crates it compared
+  against.
