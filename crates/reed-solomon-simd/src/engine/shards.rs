@@ -2,6 +2,11 @@
 use alloc::vec::Vec;
 use core::ops::{Bound, Index, IndexMut, Range, RangeBounds};
 
+use wide::{
+    bytemuck::{cast_slice, cast_slice_mut},
+    u8x64,
+};
+
 // ======================================================================
 // Shards - CRATE
 
@@ -10,13 +15,22 @@ pub(crate) struct Shards {
     // Shard length in 64 byte chunks
     shard_len_64: usize,
 
-    // Flat Vec of `shard_count * shard_len_64 * 64` bytes.
-    data: Vec<[u8; 64]>,
+    // Flat Vec of `shard_count * shard_len_64 * 64` bytes, aligned to 64
+    // bytes so that no vector load or store splits a cache line.
+    data: Vec<u8x64>,
 }
 
 impl Shards {
     pub(crate) fn as_ref_mut(&mut self) -> ShardsRefMut<'_> {
-        ShardsRefMut::new(self.shard_count, self.shard_len_64, self.data.as_mut())
+        ShardsRefMut::new(self.shard_count, self.shard_len_64, self.chunks_mut())
+    }
+
+    fn chunks(&self) -> &[[u8; 64]] {
+        cast_slice(&self.data)
+    }
+
+    fn chunks_mut(&mut self) -> &mut [[u8; 64]] {
+        cast_slice_mut(&mut self.data)
     }
 
     pub(crate) fn new() -> Self {
@@ -32,7 +46,7 @@ impl Shards {
         self.shard_len_64 = shard_len_64;
 
         self.data
-            .resize(self.shard_count * self.shard_len_64, [0; 64]);
+            .resize(self.shard_count * self.shard_len_64, u8x64::ZERO);
     }
 
     pub(crate) fn insert(&mut self, index: usize, shard: &[u8]) {
@@ -80,7 +94,7 @@ impl Shards {
 impl Index<usize> for Shards {
     type Output = [[u8; 64]];
     fn index(&self, index: usize) -> &Self::Output {
-        &self.data[index * self.shard_len_64..(index + 1) * self.shard_len_64]
+        &self.chunks()[index * self.shard_len_64..(index + 1) * self.shard_len_64]
     }
 }
 
@@ -89,7 +103,8 @@ impl Index<usize> for Shards {
 
 impl IndexMut<usize> for Shards {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.data[index * self.shard_len_64..(index + 1) * self.shard_len_64]
+        let len = self.shard_len_64;
+        &mut self.chunks_mut()[index * len..(index + 1) * len]
     }
 }
 
