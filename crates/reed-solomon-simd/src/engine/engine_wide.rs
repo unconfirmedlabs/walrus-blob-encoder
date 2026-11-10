@@ -2,7 +2,12 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::iter::zip;
 
-use wide::{bytemuck::cast, u16x8, u8x16};
+#[cfg(target_feature = "avx2")]
+use wide::{u16x16, u8x32};
+#[cfg(not(target_feature = "avx2"))]
+use wide::{u16x8, u8x16};
+
+use wide::bytemuck::cast;
 
 use crate::engine::{
     tables::{self, Mul128, Multiply128lutT, Skew},
@@ -12,12 +17,13 @@ use crate::engine::{
 // ======================================================================
 // Wide - PUBLIC
 
-/// Optimized [`Engine`] using portable 128-bit SIMD from the [`wide`] crate.
+/// Optimized [`Engine`] using portable SIMD from the [`wide`] crate.
 ///
 /// [`Wide`] follows the same algorithm as [`NoSimd`] and the same structure
 /// as the SSSE3 engine. The instruction set is chosen at compile time from
-/// the enabled target features: SSSE3 on x86(-64), `simd128` on WebAssembly,
-/// NEON on `AArch64`. Without one of these it still produces correct output,
+/// the enabled target features: 256-bit AVX2 vectors when AVX2 is enabled,
+/// otherwise 128-bit vectors on SSSE3 (x86(-64)), `simd128` (WebAssembly) or
+/// NEON (`AArch64`). Without one of these it still produces correct output,
 /// through a scalar fallback that is slower than [`NoSimd`].
 ///
 /// [`Wide::new`] uses the global 8 MiB [`Mul128`] table.
@@ -172,10 +178,17 @@ impl Default for Wide {
 // Wide - PRIVATE - vectors
 //
 // Each 64-byte chunk holds 32 field elements: the 32 low bytes, then the 32
-// high bytes, as `[low 0..16, low 16..32, high 0..16, high 16..32]`.
+// high bytes. With AVX2 a chunk is two 256-bit vectors `[low, high]`; with
+// 128-bit vectors it is `[low 0..16, low 16..32, high 0..16, high 16..32]`.
 
+#[cfg(target_feature = "avx2")]
+type Vector = u8x32;
+#[cfg(not(target_feature = "avx2"))]
 type Vector = u8x16;
 
+#[cfg(target_feature = "avx2")]
+type Chunk = [Vector; 2];
+#[cfg(not(target_feature = "avx2"))]
 type Chunk = [Vector; 4];
 
 #[inline(always)]
@@ -193,22 +206,41 @@ fn xor(x: Chunk, y: Chunk) -> Chunk {
     core::array::from_fn(|i| x[i] ^ y[i])
 }
 
-/// A 16-entry table of a `Multiply128lutT`.
+/// A 16-entry table of a `Multiply128lutT`, in every 128-bit lane.
+#[cfg(target_feature = "avx2")]
+#[inline(always)]
+fn table(entry: u128) -> Vector {
+    cast([entry, entry])
+}
 
+#[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
 fn table(entry: u128) -> Vector {
     cast(entry)
 }
 
-/// Looks up every byte of `index` in `table`. Every index is a nibble.
+/// Looks up every byte of `index` in `table`, per 128-bit lane. Every index
+/// is a nibble, so the relaxed lookup is exact.
+#[cfg(target_feature = "avx2")]
+#[inline(always)]
+fn lookup(table: Vector, index: Vector) -> Vector {
+    table.swizzle_half_relaxed(index)
+}
 
+#[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
 fn lookup(table: Vector, index: Vector) -> Vector {
     table.shuffle(index)
 }
 
 /// The high nibble of every byte, in the low nibble position.
+#[cfg(target_feature = "avx2")]
+#[inline(always)]
+fn high_nibbles(value: Vector, mask: Vector) -> Vector {
+    cast::<u16x16, Vector>(cast::<Vector, u16x16>(value) >> 4_u32) & mask
+}
 
+#[cfg(not(target_feature = "avx2"))]
 #[inline(always)]
 fn high_nibbles(value: Vector, mask: Vector) -> Vector {
     cast::<u16x8, Vector>(cast::<Vector, u16x8>(value) >> 4_u32) & mask
@@ -230,8 +262,8 @@ impl Lut {
         }
     }
 
-    // Implementation of LEO_MUL_128 on a vector of low bytes and the vector
-    // of the matching high bytes.
+    // Implementation of LEO_MUL_128 (LEO_MUL_256 with AVX2) on a vector of
+    // low bytes and the vector of the matching high bytes.
     #[inline(always)]
     fn mul_vectors(&self, value_lo: Vector, value_hi: Vector) -> (Vector, Vector) {
         let mask = Vector::splat(0x0f);
@@ -256,8 +288,15 @@ impl Lut {
     }
 
     /// `chunk * log_m`
+    #[cfg(target_feature = "avx2")]
+    #[inline(always)]
+    fn mul(&self, [lo, hi]: Chunk) -> Chunk {
+        let (prod_lo, prod_hi) = self.mul_vectors(lo, hi);
+        [prod_lo, prod_hi]
+    }
 
     /// `chunk * log_m`
+    #[cfg(not(target_feature = "avx2"))]
     #[inline(always)]
     fn mul(&self, [lo0, lo1, hi0, hi1]: Chunk) -> Chunk {
         let (prod0_lo, prod0_hi) = self.mul_vectors(lo0, hi0);
