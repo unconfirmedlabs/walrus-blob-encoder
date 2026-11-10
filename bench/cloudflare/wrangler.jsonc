@@ -1,0 +1,10 @@
+{
+  "name": "walrus-encoder-bench",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 300000 },
+  "observability": { "enabled": true },
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": false }]
+}

@@ -1,0 +1,4 @@
+.bench-key
+.wrangler/
+stock-wasm/target/
+wasm/
