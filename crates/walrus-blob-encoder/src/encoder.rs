@@ -295,7 +295,10 @@ impl Schedule {
             .par_chunks_mut(layout.n_faulty * symbol_size)
             .enumerate()
             .for_each_init(
-                || Encoder::new(engine, layout.n_cols, layout.n_faulty, symbol_size),
+                || {
+                    let limit = layout.skew_limit();
+                    Encoder::new(engine, layout.n_cols, layout.n_faulty, symbol_size, limit)
+                },
                 |encoder, (row, out)| {
                     let result = encoder.encode(matrix.row(row).chunks_exact(symbol_size));
                     out.chunks_exact_mut(symbol_size)
@@ -317,7 +320,8 @@ impl Schedule {
         let n = layout.n_shards;
         leaves.par_chunks_mut(n).enumerate().for_each_init(
             || {
-                let encoder = Encoder::new(engine, layout.n_rows, n - layout.n_rows, symbol_size);
+                let (rows, limit) = (layout.n_rows, layout.skew_limit());
+                let encoder = Encoder::new(engine, rows, n - rows, symbol_size, limit);
                 (encoder, MessageBuf::default())
             },
             |(encoder, messages), (col, leaves)| {

@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, vec::Vec};
 use core::iter::zip;
 
 use crate::engine::{
@@ -5,16 +7,28 @@ use crate::engine::{
     utils, Engine, GfElement, ShardsRefMut, GF_MODULUS,
 };
 
+/// The [`Mul16`] entry of one factor.
+type Lut = [[GfElement; 16]; 4];
+
 // ======================================================================
 // NoSimd - PUBLIC
 
 /// Optimized [`Engine`] without SIMD.
 ///
 /// [`NoSimd`] is a basic optimized engine which works on all CPUs.
-#[derive(Clone, Copy)]
+///
+/// [`NoSimd::new`] uses the global 8 MiB [`Mul16`] table;
+/// [`NoSimd::with_skew_limit`] and [`NoSimd::for_encoder`] build only the
+/// tables of the first skew factors, as [`Wide::with_skew_limit`] does.
+///
+/// [`Wide::with_skew_limit`]: crate::engine::Wide::with_skew_limit
+#[derive(Clone)]
 pub struct NoSimd {
-    mul16: &'static Mul16,
     skew: &'static Skew,
+    /// The table of `skew[i]`, for every position `i < by_position.len()`.
+    by_position: Box<[Lut]>,
+    /// The global table, for factors beyond `by_position` and for [`Engine::mul`].
+    full: Option<&'static Mul16>,
 }
 
 impl NoSimd {
@@ -26,10 +40,59 @@ impl NoSimd {
     ///
     /// [`LogWalsh`]: crate::engine::tables::LogWalsh
     pub fn new() -> Self {
-        let mul16 = tables::get_mul16();
-        let skew = tables::get_skew();
+        Self {
+            skew: tables::get_skew(),
+            by_position: Box::new([]),
+            full: Some(tables::get_mul16()),
+        }
+    }
 
-        Self { mul16, skew }
+    /// Creates new [`NoSimd`] with lookup tables for the skew factors at
+    /// positions `0..limit` only, 128 bytes each, instead of the 8 MiB
+    /// [`Mul16`] table. Factors beyond them use the global table,
+    /// initializing it on first use; [`Engine::mul`] builds its table per call.
+    pub fn with_skew_limit(limit: usize) -> Self {
+        let skew = tables::get_skew();
+        let tables::ExpLog { exp, log } = tables::get_exp_log();
+        let limit = limit.min(skew.len());
+        let by_position: Vec<Lut> = skew[..limit]
+            .iter()
+            .map(|&log_m| {
+                if log_m == GF_MODULUS {
+                    [[0; 16]; 4]
+                } else {
+                    tables::mul16_lut(log_m, exp, log)
+                }
+            })
+            .collect();
+        Self {
+            skew,
+            by_position: by_position.into_boxed_slice(),
+            full: None,
+        }
+    }
+
+    /// Creates new [`NoSimd`] whose tables cover every factor the encoders of
+    /// [`rate`] use for these shard counts; see [`utils::encoder_skew_limit`].
+    ///
+    /// [`rate`]: crate::rate
+    pub fn for_encoder(original_count: usize, recovery_count: usize) -> Self {
+        Self::with_skew_limit(utils::encoder_skew_limit(original_count, recovery_count))
+    }
+
+    /// The table of the skew factor at `position`, or `None` if the factor
+    /// is zero (`GF_MODULUS`).
+    #[inline(always)]
+    fn factor(&self, position: usize) -> Option<&Lut> {
+        let log_m = self.skew[position];
+        if log_m == GF_MODULUS {
+            None
+        } else if let Some(lut) = self.by_position.get(position) {
+            Some(lut)
+        } else {
+            let full = self.full.unwrap_or_else(tables::get_mul16);
+            Some(&full[usize::from(log_m)])
+        }
     }
 }
 
@@ -57,7 +120,14 @@ impl Engine for NoSimd {
     }
 
     fn mul(&self, x: &mut [[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul16[log_m as usize];
+        let owned;
+        let lut = if let Some(full) = self.full {
+            &full[usize::from(log_m)]
+        } else {
+            let tables::ExpLog { exp, log } = tables::get_exp_log();
+            owned = tables::mul16_lut(log_m, exp, log);
+            &owned
+        };
 
         for x_chunk in x.iter_mut() {
             let (x_lo, x_hi) = x_chunk.split_at_mut(32);
@@ -90,9 +160,7 @@ impl Default for NoSimd {
 
 impl NoSimd {
     /// `x[] ^= y[] * log_m`
-    fn mul_add(&self, x: &mut [[u8; 64]], y: &[[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul16[log_m as usize];
-
+    fn mul_add(x: &mut [[u8; 64]], y: &[[u8; 64]], lut: &Lut) {
         for (x_chunk, y_chunk) in zip(x.iter_mut(), y.iter()) {
             let (x_lo, x_hi) = x_chunk.split_at_mut(32);
             let (y_lo, y_hi) = y_chunk.split_at(32);
@@ -117,46 +185,37 @@ impl NoSimd {
 impl NoSimd {
     // Partial butterfly, caller must do `GF_MODULUS` check with `xor`.
     #[inline(always)]
-    fn fft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
-        self.mul_add(x, y, log_m);
+    fn fft_butterfly_partial(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut: &Lut) {
+        Self::mul_add(x, y, lut);
         utils::xor(y, x);
     }
 
     #[inline(always)]
+    fn fft_butterfly(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut: Option<&Lut>) {
+        match lut {
+            None => utils::xor(y, x),
+            Some(lut) => Self::fft_butterfly_partial(x, y, lut),
+        }
+    }
+
+    #[inline(always)]
     fn fft_butterfly_two_layers(
-        &self,
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        log_m01: GfElement,
-        log_m23: GfElement,
-        log_m02: GfElement,
+        [lut01, lut23, lut02]: [Option<&Lut>; 3],
     ) {
         let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
 
         // FIRST LAYER
 
-        if log_m02 == GF_MODULUS {
-            utils::xor(s2, s0);
-            utils::xor(s3, s1);
-        } else {
-            self.fft_butterfly_partial(s0, s2, log_m02);
-            self.fft_butterfly_partial(s1, s3, log_m02);
-        }
+        Self::fft_butterfly(s0, s2, lut02);
+        Self::fft_butterfly(s1, s3, lut02);
 
         // SECOND LAYER
 
-        if log_m01 == GF_MODULUS {
-            utils::xor(s1, s0);
-        } else {
-            self.fft_butterfly_partial(s0, s1, log_m01);
-        }
-
-        if log_m23 == GF_MODULUS {
-            utils::xor(s3, s2);
-        } else {
-            self.fft_butterfly_partial(s2, s3, log_m23);
-        }
+        Self::fft_butterfly(s0, s1, lut01);
+        Self::fft_butterfly(s2, s3, lut23);
     }
 
     #[inline(always)]
@@ -177,12 +236,14 @@ impl NoSimd {
             while r < truncated_size {
                 let base = r + dist + skew_delta - 1;
 
-                let log_m01 = self.skew[base];
-                let log_m02 = self.skew[base + dist];
-                let log_m23 = self.skew[base + dist * 2];
+                let luts = [
+                    self.factor(base),
+                    self.factor(base + dist * 2),
+                    self.factor(base + dist),
+                ];
 
                 for i in r..r + dist {
-                    self.fft_butterfly_two_layers(data, pos + i, dist, log_m01, log_m23, log_m02);
+                    Self::fft_butterfly_two_layers(data, pos + i, dist, luts);
                 }
 
                 r += dist4;
@@ -196,15 +257,9 @@ impl NoSimd {
         if dist4 == 2 {
             let mut r = 0;
             while r < truncated_size {
-                let log_m = self.skew[r + skew_delta];
-
+                let lut = self.factor(r + skew_delta);
                 let (x, y) = data.dist2_mut(pos + r, 1);
-
-                if log_m == GF_MODULUS {
-                    utils::xor(y, x);
-                } else {
-                    self.fft_butterfly_partial(x, y, log_m);
-                }
+                Self::fft_butterfly(x, y, lut);
 
                 r += 2;
             }
@@ -218,46 +273,37 @@ impl NoSimd {
 impl NoSimd {
     // Partial butterfly, caller must do `GF_MODULUS` check with `xor`.
     #[inline(always)]
-    fn ifft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
+    fn ifft_butterfly_partial(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut: &Lut) {
         utils::xor(y, x);
-        self.mul_add(x, y, log_m);
+        Self::mul_add(x, y, lut);
+    }
+
+    #[inline(always)]
+    fn ifft_butterfly(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut: Option<&Lut>) {
+        match lut {
+            None => utils::xor(y, x),
+            Some(lut) => Self::ifft_butterfly_partial(x, y, lut),
+        }
     }
 
     #[inline(always)]
     fn ifft_butterfly_two_layers(
-        &self,
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        log_m01: GfElement,
-        log_m23: GfElement,
-        log_m02: GfElement,
+        [lut01, lut23, lut02]: [Option<&Lut>; 3],
     ) {
         let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
 
         // FIRST LAYER
 
-        if log_m01 == GF_MODULUS {
-            utils::xor(s1, s0);
-        } else {
-            self.ifft_butterfly_partial(s0, s1, log_m01);
-        }
-
-        if log_m23 == GF_MODULUS {
-            utils::xor(s3, s2);
-        } else {
-            self.ifft_butterfly_partial(s2, s3, log_m23);
-        }
+        Self::ifft_butterfly(s0, s1, lut01);
+        Self::ifft_butterfly(s2, s3, lut23);
 
         // SECOND LAYER
 
-        if log_m02 == GF_MODULUS {
-            utils::xor(s2, s0);
-            utils::xor(s3, s1);
-        } else {
-            self.ifft_butterfly_partial(s0, s2, log_m02);
-            self.ifft_butterfly_partial(s1, s3, log_m02);
-        }
+        Self::ifft_butterfly(s0, s2, lut02);
+        Self::ifft_butterfly(s1, s3, lut02);
     }
 
     #[inline(always)]
@@ -278,12 +324,14 @@ impl NoSimd {
             while r < truncated_size {
                 let base = r + dist + skew_delta - 1;
 
-                let log_m01 = self.skew[base];
-                let log_m02 = self.skew[base + dist];
-                let log_m23 = self.skew[base + dist * 2];
+                let luts = [
+                    self.factor(base),
+                    self.factor(base + dist * 2),
+                    self.factor(base + dist),
+                ];
 
                 for i in r..r + dist {
-                    self.ifft_butterfly_two_layers(data, pos + i, dist, log_m01, log_m23, log_m02);
+                    Self::ifft_butterfly_two_layers(data, pos + i, dist, luts);
                 }
 
                 r += dist4;
@@ -295,17 +343,17 @@ impl NoSimd {
         // FINAL ODD LAYER
 
         if dist < size {
-            let log_m = self.skew[dist + skew_delta - 1];
-            if log_m == GF_MODULUS {
-                utils::xor_within(data, pos + dist, pos, dist);
-            } else {
-                let (mut a, mut b) = data.split_at_mut(pos + dist);
-                for i in 0..dist {
-                    self.ifft_butterfly_partial(
-                        &mut a[pos + i], // data[pos + i]
-                        &mut b[i],       // data[pos + i + dist]
-                        log_m,
-                    );
+            match self.factor(dist + skew_delta - 1) {
+                None => utils::xor_within(data, pos + dist, pos, dist),
+                Some(lut) => {
+                    let (mut a, mut b) = data.split_at_mut(pos + dist);
+                    for i in 0..dist {
+                        Self::ifft_butterfly_partial(
+                            &mut a[pos + i], // data[pos + i]
+                            &mut b[i],       // data[pos + i + dist]
+                            lut,
+                        );
+                    }
                 }
             }
         }
@@ -344,6 +392,45 @@ mod tests {
             wide.mul(&mut data_wide, log_m);
 
             assert_eq!(data_nosimd, data_wide);
+
+            let mut data_compact = data_wide.clone();
+            nosimd.mul(&mut data_wide, log_m);
+            NoSimd::with_skew_limit(0).mul(&mut data_compact, log_m);
+            assert_eq!(data_compact, data_wide);
+        }
+    }
+
+    #[test]
+    fn compact_tables_match_full_tables() {
+        use crate::rate::{DefaultRateEncoder, RateEncoder};
+        #[cfg(not(feature = "std"))]
+        use alloc::vec::Vec;
+
+        fn encode(engine: NoSimd, original: &[Vec<u8>], recovery_count: usize) -> Vec<Vec<u8>> {
+            let shard_bytes = original[0].len();
+            let mut encoder =
+                DefaultRateEncoder::new(original.len(), recovery_count, shard_bytes, engine, None)
+                    .unwrap();
+            for shard in original {
+                encoder.add_original_shard(shard).unwrap();
+            }
+            let result = encoder.encode().unwrap();
+            result.recovery_iter().map(<[u8]>::to_vec).collect()
+        }
+
+        let mut rng = ChaCha8Rng::from_seed([2; 32]);
+        for n in [4, 7, 13, 100, 1000] {
+            let f = (n - 1) / 3;
+            for (original_count, recovery_count) in [(n - f, f), (n - 2 * f, 2 * f)] {
+                let original: Vec<Vec<u8>> = (0..original_count)
+                    .map(|_| (0..66).map(|_| rng.random()).collect())
+                    .collect();
+                let compact = NoSimd::for_encoder(original_count, recovery_count);
+                let short = NoSimd::with_skew_limit(7);
+                let expected = encode(NoSimd::new(), &original, recovery_count);
+                assert_eq!(encode(compact, &original, recovery_count), expected);
+                assert_eq!(encode(short, &original, recovery_count), expected);
+            }
         }
     }
 }

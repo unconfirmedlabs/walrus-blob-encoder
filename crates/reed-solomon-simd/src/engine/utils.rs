@@ -2,7 +2,8 @@
 //!
 //! [`Engine`]: crate::engine::Engine
 
-use crate::engine::{fwht, tables, Engine, GfElement, ShardsRefMut, GF_BITS, GF_ORDER};
+use crate::engine::{fwht, tables, Engine, GfElement, ShardsRefMut, GF_BITS, GF_MODULUS, GF_ORDER};
+use crate::rate::use_high_rate;
 use core::iter::zip;
 
 // ======================================================================
@@ -24,6 +25,31 @@ pub fn eval_poly(erasures: &mut [GfElement; GF_ORDER], truncated_size: usize) {
     }
 
     fwht::fwht(erasures, GF_ORDER);
+}
+
+/// One past the largest skew-table position that the encoders of [`rate`]
+/// read for `original_count` original and `recovery_count` recovery shards,
+/// or [`GF_MODULUS`] (the table length) if the counts are unsupported.
+///
+/// The transforms of a work area of `work_count` shards in chunks of
+/// `chunk_size` shards read positions below `work_count + chunk_size`.
+///
+/// [`rate`]: crate::rate
+/// [`GF_MODULUS`]: crate::engine::GF_MODULUS
+pub fn encoder_skew_limit(original_count: usize, recovery_count: usize) -> usize {
+    let table_len = usize::from(GF_MODULUS);
+    let (chunk_size, work_count) = match use_high_rate(original_count, recovery_count) {
+        Ok(true) => {
+            let chunk_size = recovery_count.next_power_of_two();
+            (chunk_size, original_count.next_multiple_of(chunk_size))
+        }
+        Ok(false) => {
+            let chunk_size = original_count.next_power_of_two();
+            (chunk_size, recovery_count.next_multiple_of(chunk_size))
+        }
+        Err(_) => return table_len,
+    };
+    (work_count + chunk_size).min(table_len)
 }
 
 /// `x[] ^= y[]`

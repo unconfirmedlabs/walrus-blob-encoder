@@ -4,7 +4,7 @@
 use reed_solomon_simd::engine::NoSimd;
 use reed_solomon_simd::rate::{DefaultRateEncoder, RateEncoder};
 
-use super::{Encoder, Engine, SimdEngine};
+use super::{Encoder, Engine, SimdEngine, skew_limit};
 
 /// SplitMix64, for reproducible random test data.
 struct Rng(u64);
@@ -56,7 +56,8 @@ fn parameter_sets() -> Vec<(usize, usize)> {
 }
 
 fn shard_sizes(rng: &mut Rng) -> Vec<usize> {
-    let mut sizes = vec![2, 4, 6, 62, 64, 66, 126, 128, 130, 314, 1164, 1206, 4096];
+    let mut sizes: Vec<usize> = (2..=130).step_by(2).collect();
+    sizes.extend([314, 1164, 1206, 4096, 4490]);
     sizes.extend((0..3).map(|_| 2 + 2 * rng.below(300)));
     sizes
 }
@@ -67,7 +68,7 @@ fn engines_agree() {
         .map(|i| (0..64u16).map(|j| (i * 31 + j * 7) as u8).collect())
         .collect();
     let encode = |engine| {
-        let mut encoder = Encoder::new(engine, 667, 333, 64);
+        let mut encoder = Encoder::new(engine, 667, 333, 64, skew_limit(&[(667, 333), (334, 666)]));
         let result = encoder.encode(shards.iter().map(Vec::as_slice));
         result
             .recovery_iter()
@@ -87,10 +88,27 @@ fn simd_engine_matches_portable() {
     for (original, recovery_count) in parameter_sets() {
         for shard_bytes in shard_sizes(&mut rng) {
             let originals: Vec<_> = (0..original).map(|_| rng.bytes(shard_bytes)).collect();
+            let expected = recovery(NoSimd::new(), &originals, recovery_count);
+            let limit = skew_limit(&[(original, recovery_count)]);
+            let case = format!("({original}, {recovery_count}) with {shard_bytes}-byte shards");
             assert_eq!(
                 recovery(SimdEngine::new(), &originals, recovery_count),
-                recovery(NoSimd::new(), &originals, recovery_count),
-                "({original}, {recovery_count}) with {shard_bytes}-byte shards"
+                expected,
+                "{case}"
+            );
+            assert_eq!(
+                recovery(
+                    SimdEngine::with_skew_limit(limit),
+                    &originals,
+                    recovery_count
+                ),
+                expected,
+                "compact tables, {case}"
+            );
+            assert_eq!(
+                recovery(NoSimd::with_skew_limit(limit), &originals, recovery_count),
+                expected,
+                "portable compact tables, {case}"
             );
         }
     }

@@ -17,9 +17,32 @@ pub(crate) fn supports(original: usize, recovery: usize) -> bool {
     ReedSolomonEncoder::supports(original, recovery)
 }
 
-/// The `reed-solomon-simd` SIMD engine, chosen at compile time: [`engine::Wide`] when the target
-/// enables SSSE3, WebAssembly `simd128` or NEON, otherwise [`NoSimd`].
-type SimdEngine = engine::DefaultEngine;
+/// The SIMD engine, chosen at compile time as `reed-solomon-simd`'s `DefaultEngine` is:
+/// [`engine::Wide`] when the target enables SSSE3, WebAssembly `simd128` or NEON (with 256-bit
+/// vectors when it also enables AVX2), otherwise [`NoSimd`].
+#[cfg(any(
+    target_feature = "ssse3",
+    target_feature = "simd128",
+    all(target_arch = "aarch64", target_feature = "neon"),
+))]
+type SimdEngine = engine::Wide;
+#[cfg(not(any(
+    target_feature = "ssse3",
+    target_feature = "simd128",
+    all(target_arch = "aarch64", target_feature = "neon"),
+)))]
+type SimdEngine = NoSimd;
+
+/// One past the largest skew-table position the encoders for `shapes` (original and recovery
+/// counts) read: the portable and SIMD engines build multiplication tables for these positions
+/// only, about 128 bytes each, instead of a global 8 MiB table.
+pub(crate) fn skew_limit(shapes: &[(usize, usize)]) -> usize {
+    shapes
+        .iter()
+        .map(|&(original, recovery)| engine::utils::encoder_skew_limit(original, recovery))
+        .max()
+        .unwrap_or(0)
+}
 
 /// Engine choice: portable code only, the compile-time SIMD engine, or the AVX-512 engine where
 /// available. All engines produce identical recovery shards.
@@ -40,7 +63,9 @@ pub(crate) enum Encoder {
 
 impl Encoder {
     /// An encoder for `engine`, falling back to [`Engine::Simd`] if the AVX-512 engine is
-    /// unavailable.
+    /// unavailable. The portable and SIMD engines get multiplication tables for the skew
+    /// positions below `skew_limit` (see [`skew_limit`]), enough for every shape it is reset to
+    /// within that limit.
     ///
     /// # Panics
     ///
@@ -51,16 +76,21 @@ impl Encoder {
         original: usize,
         recovery: usize,
         shard_bytes: usize,
+        skew_limit: usize,
     ) -> Self {
         let shape = (original, recovery, shard_bytes);
         match engine {
-            Engine::Portable => Encoder::Portable(rate_encoder(shape, NoSimd::new())),
+            Engine::Portable => {
+                Encoder::Portable(rate_encoder(shape, NoSimd::with_skew_limit(skew_limit)))
+            }
             #[cfg(target_arch = "x86_64")]
             Engine::Avx512 => match engine::Avx512::new() {
                 Some(engine) => Encoder::Avx512(rate_encoder(shape, engine)),
-                None => Self::new(Engine::Simd, original, recovery, shard_bytes),
+                None => Self::new(Engine::Simd, original, recovery, shard_bytes, skew_limit),
             },
-            Engine::Simd => Encoder::Simd(rate_encoder(shape, SimdEngine::new())),
+            Engine::Simd => {
+                Encoder::Simd(rate_encoder(shape, SimdEngine::with_skew_limit(skew_limit)))
+            }
         }
     }
 

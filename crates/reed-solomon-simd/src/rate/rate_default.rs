@@ -12,7 +12,7 @@ use crate::{
 // ======================================================================
 // FUNCTIONS - PRIVATE
 
-fn use_high_rate(original_count: usize, recovery_count: usize) -> Result<bool, Error> {
+pub(crate) fn use_high_rate(original_count: usize, recovery_count: usize) -> Result<bool, Error> {
     if original_count > GF_ORDER || recovery_count > GF_ORDER {
         return Err(Error::UnsupportedShardCount {
             original_count,

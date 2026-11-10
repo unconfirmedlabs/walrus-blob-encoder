@@ -41,6 +41,8 @@ pub use self::{
 mod decoder_work;
 mod encoder_work;
 mod rate_default;
+
+pub(crate) use self::rate_default::use_high_rate;
 mod rate_high;
 mod rate_low;
 

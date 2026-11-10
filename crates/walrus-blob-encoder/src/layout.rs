@@ -40,6 +40,14 @@ impl ShardLayout {
         .then_some(layout)
     }
 
+    /// The skew-table limit of the Reed-Solomon encoders of both axes.
+    pub(crate) fn skew_limit(&self) -> usize {
+        reed_solomon::skew_limit(&[
+            (self.n_cols, self.n_faulty),
+            (self.n_rows, self.n_shards - self.n_rows),
+        ])
+    }
+
     pub(crate) fn n_source_symbols(&self) -> u64 {
         (self.n_rows * self.n_cols) as u64
     }

@@ -9,9 +9,14 @@
 //! | [`Exp`]      | 128 kiB | yes              | yes              | all                |
 //! | [`Log`]      | 128 kiB | yes              | yes              | all                |
 //! | [`LogWalsh`] | 128 kiB | -                | yes              | all                |
-//! | [`Mul16`]    | 8 MiB   | yes              | yes              | [`NoSimd`]         |
-//! | [`Mul128`]   | 8 MiB   | yes              | yes              | [`Wide`]           |
+//! | [`Mul16`]    | 8 MiB   | yes (1)          | yes              | [`NoSimd`]         |
+//! | [`Mul128`]   | 8 MiB   | yes (1)          | yes              | [`Wide`], `Avx512` |
 //! | [`Skew`]     | 128 kiB | yes              | yes              | all                |
+//!
+//! (1) Only by engines made with `new`. Engines made with `with_skew_limit`
+//! or `for_encoder` build the entries of the skew factors they use instead,
+//! 128 bytes each ([`mul16_lut`], [`mul128_lut`]), and fall back to the
+//! global table only for factors past those.
 //!
 //! [`NoSimd`]: crate::engine::NoSimd
 //! [`Wide`]: crate::engine::Wide
@@ -171,6 +176,27 @@ pub fn mul(x: GfElement, log_m: GfElement, exp: &Exp, log: &Log) -> GfElement {
     }
 }
 
+/// The [`Mul16`] entry of `log_m`: `lut[i][x]` is `(x << 4 * i) * log_m`.
+pub fn mul16_lut(log_m: GfElement, exp: &Exp, log: &Log) -> [[GfElement; 16]; 4] {
+    core::array::from_fn(|i| {
+        core::array::from_fn(|x| mul((x << (4 * i)) as GfElement, log_m, exp, log))
+    })
+}
+
+/// The [`Mul128`] entry of `log_m`: nibble tables of the low and high product bytes.
+pub fn mul128_lut(log_m: GfElement, exp: &Exp, log: &Log) -> Multiply128lutT {
+    // Based on:
+    // https://github.com/catid/leopard/blob/22ddc7804998d31c8f1a2617ee720e063b1fa6cd/LeopardFF16.cpp#L375
+    let products = mul16_lut(log_m, exp, log);
+    let bytes = |i: usize, shift: u32| {
+        u128::from_le_bytes(core::array::from_fn(|x| (products[i][x] >> shift) as u8))
+    };
+    Multiply128lutT {
+        lo: core::array::from_fn(|i| bytes(i, 0)),
+        hi: core::array::from_fn(|i| bytes(i, 8)),
+    }
+}
+
 // ======================================================================
 // FUNCTIONS - PRIVATE - initialize tables
 
@@ -227,29 +253,18 @@ fn initialize_log_walsh() -> Box<LogWalsh> {
 }
 
 fn initialize_mul16() -> Box<Mul16> {
-    let exp = &get_exp_log().exp;
-    let log = &get_exp_log().log;
+    let ExpLog { exp, log } = get_exp_log();
     let mut mul16 = vec![[[0; 16]; 4]; GF_ORDER];
 
     for log_m in 0..=GF_MODULUS {
-        let lut = &mut mul16[log_m as usize];
-        for i in 0..16 {
-            lut[0][i] = mul(i as GfElement, log_m, exp, log);
-            lut[1][i] = mul((i << 4) as GfElement, log_m, exp, log);
-            lut[2][i] = mul((i << 8) as GfElement, log_m, exp, log);
-            lut[3][i] = mul((i << 12) as GfElement, log_m, exp, log);
-        }
+        mul16[log_m as usize] = mul16_lut(log_m, exp, log);
     }
 
     mul16.into_boxed_slice().try_into().unwrap()
 }
 
 fn initialize_mul128() -> Box<Mul128> {
-    // Based on:
-    // https://github.com/catid/leopard/blob/22ddc7804998d31c8f1a2617ee720e063b1fa6cd/LeopardFF16.cpp#L375
-    let exp = &get_exp_log().exp;
-    let log = &get_exp_log().log;
-
+    let ExpLog { exp, log } = get_exp_log();
     let mut mul128 = vec![
         Multiply128lutT {
             lo: [0; 4],
@@ -259,17 +274,7 @@ fn initialize_mul128() -> Box<Mul128> {
     ];
 
     for log_m in 0..=GF_MODULUS {
-        for i in 0..=3 {
-            let mut prod_lo = [0u8; 16];
-            let mut prod_hi = [0u8; 16];
-            for x in 0..16 {
-                let prod = mul((x << (i * 4)) as GfElement, log_m, exp, log);
-                prod_lo[x] = prod as u8;
-                prod_hi[x] = (prod >> 8) as u8;
-            }
-            mul128[log_m as usize].lo[i] = u128::from_le_bytes(prod_lo);
-            mul128[log_m as usize].hi[i] = u128::from_le_bytes(prod_hi);
-        }
+        mul128[log_m as usize] = mul128_lut(log_m, exp, log);
     }
 
     mul128.into_boxed_slice().try_into().unwrap()
