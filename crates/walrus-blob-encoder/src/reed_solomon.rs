@@ -3,6 +3,8 @@
 
 //! Reed-Solomon encoders with a selectable `reed-solomon-simd` engine.
 
+use std::ops::Range;
+
 #[cfg(test)]
 mod tests;
 
@@ -112,11 +114,21 @@ impl Encoder {
         &'s mut self,
         originals: impl IntoIterator<Item = &'a [u8]>,
     ) -> EncoderResult<'s> {
+        self.encode_range(originals, 0..usize::MAX)
+    }
+
+    /// [`Self::encode`] where only the recovery shards `recovery` need to be valid: the
+    /// transforms skip what only the others need.
+    pub(crate) fn encode_range<'s, 'a>(
+        &'s mut self,
+        originals: impl IntoIterator<Item = &'a [u8]>,
+        recovery: Range<usize>,
+    ) -> EncoderResult<'s> {
         match self {
-            Encoder::Portable(encoder) => encode(encoder, originals),
-            Encoder::Simd(encoder) => encode(encoder, originals),
+            Encoder::Portable(encoder) => encode(encoder, originals, recovery),
+            Encoder::Simd(encoder) => encode(encoder, originals, recovery),
             #[cfg(target_arch = "x86_64")]
-            Encoder::Avx512(encoder) => encode(encoder, originals),
+            Encoder::Avx512(encoder) => encode(encoder, originals, recovery),
         }
     }
 }
@@ -133,10 +145,11 @@ fn rate_encoder<E: engine::Engine>(
 fn encode<'s, 'a, E: engine::Engine>(
     encoder: &'s mut DefaultRateEncoder<E>,
     originals: impl IntoIterator<Item = &'a [u8]>,
+    recovery: Range<usize>,
 ) -> EncoderResult<'s> {
     const SHAPE: &str = "shard count and size match the encoder";
     originals
         .into_iter()
         .for_each(|shard| encoder.add_original_shard(shard).expect(SHAPE));
-    encoder.encode().expect(SHAPE)
+    encoder.encode_range(recovery).expect(SHAPE)
 }

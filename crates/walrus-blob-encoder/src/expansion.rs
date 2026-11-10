@@ -112,7 +112,9 @@ impl Worker {
         let start = self.now();
         self.set_shape(Shape::Row);
         let s = self.symbol_size;
-        let result = self.encoder.encode(row.chunks_exact(s));
+        let result = self
+            .encoder
+            .encode_range(row.chunks_exact(s), recovery.clone());
         for (out, symbol) in out
             .chunks_exact_mut(s)
             .zip(result.recovery_iter().skip(recovery.start))
