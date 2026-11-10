@@ -1,0 +1,21 @@
+[package]
+name = "walrus-blob-encoder-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+description = "Command-line Walrus blob IDs from files, streamed or in memory"
+repository = "https://github.com/unconfirmedlabs/walrus-blob-encoder"
+publish = false
+
+[[bin]]
+name = "walrus-blob-id"
+path = "src/main.rs"
+
+[dependencies]
+rayon = "1.11"
+walrus-blob-encoder = { path = "../walrus-blob-encoder" }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"

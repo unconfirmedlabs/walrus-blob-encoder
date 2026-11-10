@@ -38,3 +38,21 @@ pub use error::Error;
 pub use metadata::{BlobMetadata, EncodingType, SliverPairMetadata};
 pub use stream::{ReadRequest, SeekSource, Source, SourceError, StreamEncoder, StreamStats};
 
+/// Test hooks for other crates of this workspace; not part of the API.
+#[doc(hidden)]
+pub mod __private {
+    use crate::Backend;
+
+    /// Sets `out[i] = BLAKE2b-256(prefix || messages[i])` with `backend`; `false` if it is not
+    /// available. The messages must have equal lengths.
+    pub fn hash_batch(
+        backend: Backend,
+        prefix: u8,
+        messages: &[&[u8]],
+        out: &mut [[u8; 32]],
+    ) -> bool {
+        crate::blake2b::Hasher::new(backend)
+            .map(|hasher| hasher.hash_batch(prefix, messages, out))
+            .is_some()
+    }
+}

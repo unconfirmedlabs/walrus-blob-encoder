@@ -1,0 +1,27 @@
+[package]
+name = "walrus-blob-encoder-wasm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+description = "Raw WebAssembly ABI over walrus-blob-encoder's streaming encoder"
+repository = "https://github.com/unconfirmedlabs/walrus-blob-encoder"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Exports `selftest_blake2b`, which checks the BLAKE2b backends against RustCrypto's `blake2`.
+selftest = ["dep:blake2"]
+
+[dependencies]
+blake2 = { version = "0.10.6", optional = true }
+walrus-blob-encoder = { path = "../walrus-blob-encoder", default-features = false }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/reed-solomon-simd",
     "crates/walrus-blob-encoder",
+    "crates/walrus-blob-encoder-cli",
+    "crates/walrus-blob-encoder-wasm",
 ]
 
 [profile.release]
