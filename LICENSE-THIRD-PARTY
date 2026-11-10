@@ -1,9 +1,15 @@
 Third-party notices
 
-src/reed_solomon/avx512.rs is adapted and modified from src/engine/engine_avx2.rs of
-reed-solomon-simd 3.1.0 (https://github.com/AndersTrier/reed-solomon-simd), which is based on
-Leopard-RS (https://github.com/catid/leopard). Those portions are licensed as follows; the
-license file of reed-solomon-simd is reproduced verbatim below.
+crates/reed-solomon-simd is a fork of reed-solomon-simd 3.1.0
+(https://github.com/AndersTrier/reed-solomon-simd), which is based on Leopard-RS
+(https://github.com/catid/leopard). It is vendored with its history (git subtree) and keeps its
+own license file, crates/reed-solomon-simd/LICENSE, reproduced verbatim below, which covers its
+files without a license header of their own. The exception is the following file.
+
+crates/reed-solomon-simd/src/engine/engine_avx512.rs is adapted and modified from
+src/engine/engine_avx2.rs of reed-solomon-simd 3.1.0 and is licensed under the Apache License,
+Version 2.0 (crates/reed-solomon-simd/LICENSE-APACHE, the same text as LICENSE); the portions it
+derives from reed-solomon-simd and Leopard-RS are licensed as follows.
 
 =====
 reed-solomon-simd 3.1.0 LICENSE

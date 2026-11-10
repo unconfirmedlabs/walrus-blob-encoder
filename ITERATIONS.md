@@ -399,3 +399,121 @@ must also be green before merge. No fixture or correctness assertion was weakene
 
 None: both static-pruning experiments were reverted. No AVX-512 or GFNI changes
 remain. The final compile matrix includes v4+GFNI with and without default features.
+
+## Iteration 4 — streaming engine, workspace and WebAssembly
+
+Base: `88a9fed`. Branch `streaming`. Local AMD EPYC 7313P (shared host, no AVX-512); see
+BENCHMARKS.md, iteration 4, for every table. Targets in priority order: WebAssembly on
+Cloudflare Workers (128 MB, no threads), browsers, native AVX2 servers.
+
+### Workspace
+
+The repository is a Cargo workspace. `crates/reed-solomon-simd` is our fork of
+reed-solomon-simd 3.1.0 (branch `wide-engine`, `df19424`: a `Wide` engine on the `wide` crate,
+`DefaultEngine` chosen at compile time, no per-architecture engines, no `unsafe`), added with
+`git subtree add` and full history so that `git subtree split` extracts it. It depends on
+nothing in the workspace. The AVX-512 engine moved into it (`engine::Avx512`, Apache-2.0 file
+in an MIT crate; its `runtime-detection` feature). The encoder (`crates/walrus-blob-encoder`)
+depends on it by path; `rayon` became the optional default feature `rayon`. New:
+`crates/walrus-blob-encoder-wasm` (raw `extern "C"` pull ABI, JS harness) and
+`crates/walrus-blob-encoder-cli` (`walrus-blob-id`). walrus-core moved from `c377852` to
+`d6c6d3c` (1.61.0); every existing test passed against it unchanged.
+
+### Streaming encoder
+
+Ported from the prototype onto this crate's BLAKE2b, Merkle, layout and Reed-Solomon code:
+`BlobEncoder::stream(len, budget)` is a pull state machine (`next_read` / `dest` /
+`complete_read` / `finish`), `metadata_from_source` drives it from a `Source`.
+
+- **Batches aligned at the parity boundary.** Systematic batches stop at column `n_cols`, and
+  the `f` parity columns are split into `P = ceil(f / k)` balanced passes of `ceil(f / P)`
+  columns. 100 MB at 32 MiB: 3 passes in the prototype, 2 now (bytes read 366.9 to 300 MB);
+  1 GB at 256 MiB: 3 to 2 (3.80 to 3.00 GB read). Other budgets keep their pass count
+  (1 GB: 16 at 32 MiB, 8 at 64 MiB) and only lose the mixed batch.
+- **Lane-parallel hashing.** One multi-buffer batch per column for its 1000 leaves, the column
+  root level by level, and a row forest: all row trees have the same shape, so each completed
+  pair on each level is hashed for all 1000 rows at once; state is one 64-byte pair per row and
+  level (11 levels, 704 KB). Every blob needs 2.0M inner compressions (1000 x 1001 per axis,
+  plus the 1000-leaf pair tree) and 1M leaves of `ceil((s + 1) / 128)` blocks. Natively the
+  1 GB hashing time dropped from 4.4 s (RustCrypto, one message at a time) to 1.6 s (AVX2).
+- **One Reed-Solomon encoder and work area** serves rows and columns (both shapes have a
+  1024-shard work area for 1000 shards): about 4.6 MB less at `s` = 4490.
+- **Ranged row encoding.** A parity pass needs only its slice of each row's recovery symbols;
+  `RateEncoder::encode_range` skips the FFT groups that only other recovery symbols need
+  (`Engine::fft_from`). Row encoding for 1 GB: 5.48 to 4.54 s at 32 MiB, 2.76 to 2.31 s at
+  64 MiB (estimate: about 20%).
+
+### WebAssembly BLAKE2b (`simd128`)
+
+Spiked first and measured under Node before committing. Two lanes per `v128`, as in `sse41.rs`.
+For a 5 MB blob, hashing 387 ms against 497 ms with the scalar backend in Node (1.28x, the
+low end of the 1.3 to 1.6x estimate). JavaScriptCore (Bun) ran the fully unrolled kernel
+three times slower than V8 (1430 ms); with the twelve rounds as a loop it takes 496 ms against
+908 ms for the faster scalar variant (1.83x), with no change in Node. The scalar backend stays
+unrolled (rolled, Node slows from 497 to 617 ms). Tested in the module against RustCrypto
+`blake2` over block-boundary lengths and batch sizes (`selftest_blake2b`, Node and Bun).
+
+### Reed-Solomon engines
+
+- **Compact tables.** For 1000 shards the encoders read skew positions below 1407 (pinned by a
+  test; 1536 is the computed bound), not the 65,536 entries of the 8 MiB `Mul128`/`Mul16`
+  tables. `with_skew_limit` / `for_encoder` build only those entries; the global tables stay
+  for `new()`, decoders and the AVX-512 engine. WebAssembly peak memory for 5 MB: 18432 to
+  10432 KiB; native RSS for 1 GB at 64 MiB: 80384 to 72448 KiB.
+- **256-bit `Wide`.** Under `cfg(target_feature = "avx2")` a chunk is two `u8x32`, tables
+  broadcast per lane and looked up with `swizzle_half_relaxed`. 1 GB at 64 MiB: row encoding
+  4.29 to 3.12 s, column 1.65 to 1.17 s, against 2.85 and 1.08 s for the removed runtime-AVX2
+  engine in the same streaming build.
+- **64-byte aligned work area.** The work area was `Vec<[u8; 64]>` (16-byte aligned in
+  practice), so 32-byte accesses split cache lines depending on the allocation. As
+  `Vec<wide::u8x64>`: row 2.76 to 2.90 s, column 1.04 to 1.06 s, now at or below the old
+  AVX2 engine (2.91 to 2.95 s, 1.10 s).
+- **Tables in vector form.** With Rust 1.94.1, `cast([entry, entry])` into `u8x32` went
+  through the stack instead of `vbroadcasti128`, and each butterfly group paid
+  store-forwarding stalls: a (334, 666) encode of 24-byte shards took 0.226 ms in the encoder
+  against 0.027 ms in a stand-alone build with Rust 1.99. The compact tables now hold the
+  broadcast vectors (256 bytes per position, 384 KiB). 5 MB, native: 0.29 to 0.19 s.
+- `relaxed-simd` builds use `i8x16.relaxed_swizzle` for the nibble lookups (exact: every index
+  is a nibble). 1 GB at 32 MiB in Node: 19.81 to 16.52 s; in Bun: 21.54 to 20.32 s.
+
+The engines are compared with `NoSimd` for every Walrus parameter set of the tests and every
+even shard size from 2 to 130 plus larger samples (full, exact, too-short tables; ranged
+encodes for eleven ranges per shape); the crate's own suite passes without SIMD, with SSSE3
+and with `target-cpu=native`.
+
+### Replacing the in-memory encoder
+
+Measured before deleting anything (BENCHMARKS.md, iteration 4, first table): the 88a9fed
+in-memory encoder and the same code on the new kernels, against the streaming engine's
+expansion run in place over the blob (systematic columns from the blob, rows encoded once into
+the recovery buffer, parity columns from it).
+
+- Single-threaded, the expansion was within noise or faster everywhere (5 MB 0.20 against
+  0.23 s; 1 GB 4.03 against 4.03 s) with 32 to 38 MB less RSS: no 32 MB leaf matrix, one
+  encoder instead of two.
+- With threads, the first parallel version (rows in parallel, then columns in groups of 256 in
+  parallel, the row trees split into groups of 64 rows) was 3 to 14% slower than 88a9fed at
+  4 and 16 threads. The gap was worker setup: rayon's `for_each_init` built an encoder and its
+  tables per split in every phase. With one worker per pool thread, created once per blob:
+  0.14 / 0.29 / 1.00 s at 16 threads for 100 MB / 259 MB / 1 GB against 0.14 / 0.28 / 0.99 s.
+
+`BlobEncoder::metadata` (and `blob_id`) therefore became a thin wrapper over the expansion,
+parallel on the pool when it has more than one thread, and the old schedule was deleted in its
+own commit. A plain streaming pass over a `&[u8]` with a one-pass budget was not used for
+in-memory blobs: it copies the blob into the batch buffer (1.5 times the blob for the expanded
+rows), where reading in place needs only the recovery half.
+
+### Not done, and what was learned
+
+- Not started, as scoped: scratch-storage spill, threads and Web Workers, the R2 read-plan
+  adapter. The plan is a list of column batches over a column range and `ReadRequest` is
+  `#[non_exhaustive]`, so a column-range entry point and strided read descriptors can be added
+  without breaking the API. Row trees of disjoint column ranges can only be merged on
+  power-of-two-aligned ranges.
+- The default (`x86-64`, SSE2) build has no SIMD Reed-Solomon engine: `Wide` is compile-time
+  only, and 88a9fed's runtime-detected AVX2 engine is gone with the fork. Measured: 100 MB in
+  memory, one thread, 3.53 s against 0.60 s for 88a9fed's default build. Native consumers must
+  build with target features (README).
+- In multi-pass WebAssembly runs, row encoding dominates (1 GB at 32 MiB in Node: 10.8 s of
+  19.8 s, 16 passes); the remaining lever is fewer passes (more memory, or spilling).
+- cargo-deny is not installed here: `cargo deny check` was not run (CI runs it).

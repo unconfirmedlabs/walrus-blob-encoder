@@ -3,8 +3,9 @@
 
 //! Blob metadata from a seekable source of known length, in bounded memory.
 //!
-//! The expanded matrix is walked in batches of columns, in ascending column order (see
-//! [`Expansion`]). A batch is held in a buffer of `n_rows * k * s` bytes, at most the memory
+//! The expanded matrix is walked in batches of columns, in ascending column order: each column
+//! is encoded, its leaves are hashed and appended to the row trees, which all grow together, so
+//! no leaf matrix is kept. A batch is held in a buffer of `n_rows * k * s` bytes, at most the memory
 //! budget for `k` columns of symbol size `s` (at least one column):
 //!
 //! - a batch of systematic columns (below `n_cols`) is read with `n_rows` strided reads of

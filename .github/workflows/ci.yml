@@ -37,8 +37,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: clippy-${{ matrix.runner }}
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
+      # The vendored Reed-Solomon crate keeps its upstream pedantic lints; its library is held to
+      # -D warnings, its tests and benchmarks are not.
+      - run: cargo clippy --locked -p reed-solomon-simd -- -D warnings
+      - run: cargo clippy --all-targets --locked -p walrus-blob-encoder -p walrus-blob-encoder-cli -p walrus-blob-encoder-wasm -- -D warnings
+      - run: cargo clippy --all-targets --locked -p walrus-blob-encoder --no-default-features -- -D warnings
       - run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
@@ -63,6 +66,8 @@ jobs:
           - { runner: ubuntu-latest, backend: auto, cpu_flag: "avx512f avx512bw avx512cd avx512dq avx512vl gfni", rustflags: "-C target-cpu=x86-64-v4 -C target-feature=+gfni" }
           - { runner: ubuntu-latest, backend: auto, cpu_flag: "avx512f avx512bw avx512cd avx512dq avx512vl gfni", rustflags: "-C target-cpu=x86-64-v4 -C target-feature=+gfni", features: --no-default-features }
           - { runner: ubuntu-24.04-arm, backend: auto, cpu_flag: "", features: --no-default-features }
+          - { runner: ubuntu-latest, backend: auto, cpu_flag: "avx2", rustflags: "-C target-cpu=x86-64-v3" }
+          - { runner: ubuntu-latest, backend: auto, cpu_flag: "ssse3 sse4_1", rustflags: "-C target-feature=+ssse3,+sse4.1" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check the runner supports the backend
@@ -92,11 +97,68 @@ jobs:
           if [ "${{ matrix.backend }}" != auto ]; then
             export WALRUS_BLOB_ENCODER_BACKEND=${{ matrix.backend }}
           fi
+          if [ "${{ matrix.backend }}" = avx512 ]; then
+            export REED_SOLOMON_SIMD_REQUIRE_AVX512=1
+          fi
           if [ -n "${{ matrix.rustflags }}" ]; then
             export RUSTFLAGS="${{ matrix.rustflags }}"
           fi
-          cargo test --release --locked --all-targets ${{ matrix.features }}
-          cargo test --release --locked --doc ${{ matrix.features }}
+          cargo test --release --locked -p walrus-blob-encoder --all-targets ${{ matrix.features }}
+          cargo test --release --locked -p walrus-blob-encoder --doc ${{ matrix.features }}
+
+  reed-solomon:
+    name: reed-solomon-simd (${{ matrix.rustflags || 'no SIMD' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rustflags: ["", "-C target-feature=+ssse3", "-C target-cpu=x86-64-v3"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: rs-${{ matrix.rustflags }}
+      - run: cargo test --release --locked -p reed-solomon-simd -- --include-ignored
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: wasm
+      - name: Build the simd128 module with the self-test
+        run: |
+          cargo build --locked -p walrus-blob-encoder-wasm --profile wasm \
+            --target wasm32-unknown-unknown --features selftest
+        env:
+          RUSTFLAGS: -C target-feature=+simd128
+      - name: BLAKE2b self-test and blob IDs against walrus-core under Node
+        run: |
+          WASM=target/wasm32-unknown-unknown/wasm/walrus_blob_encoder_wasm.wasm
+          RUN=crates/walrus-blob-encoder-wasm/js/run.mjs
+          node $RUN $WASM - --selftest
+          cargo build --release --locked -p walrus-blob-encoder --example upstream_id
+          for len in 0 1 1000 222777 222778 222779 5000000; do
+            head -c $len /dev/urandom > blob.bin
+            expected=$(target/release/examples/upstream_id blob.bin | awk '{ print $1 }')
+            for budget in 1 32; do
+              for mode in "" --async; do
+                got=$(node $RUN $WASM blob.bin $budget $mode --no-timing | awk '/^blob_id/ { print $2 }')
+                echo "$len $budget $mode $got $expected"
+                [ "$got" = "$expected" ]
+              done
+            done
+          done
 
   miri:
     runs-on: ubuntu-latest
@@ -107,7 +169,7 @@ jobs:
           toolchain: nightly-2026-10-11
           components: miri, rust-src
       - name: Miri on the scalar BLAKE2b backend
-        run: cargo +nightly-2026-10-11 miri test --locked --lib blake2b
+        run: cargo +nightly-2026-10-11 miri test --locked -p walrus-blob-encoder --lib blake2b
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
           WALRUS_BLOB_ENCODER_BACKEND: scalar
