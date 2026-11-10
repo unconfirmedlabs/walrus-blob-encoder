@@ -17,7 +17,7 @@
 //! - [`Wide`]
 //!     - Optimized engine using portable 128-bit SIMD: SSSE3 on x86(-64),
 //!       `simd128` on WebAssembly, Neon on `AArch64`.
-//! - [`Avx512`] (x86-64 only)
+//! - `Avx512` (x86-64 only)
 //!     - Engine using AVX-512F and AVX-512BW, with GFNI where available.
 //!       Constructed only if the CPU supports it: statically enabled target
 //!       features, or with the `runtime-detection` feature, detected at runtime.
