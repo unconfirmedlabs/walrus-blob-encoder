@@ -108,6 +108,18 @@ impl Engine for NoSimd {
         self.fft_private(data, pos, size, truncated_size, skew_delta);
     }
 
+    fn fft_from(
+        &self,
+        data: &mut ShardsRefMut,
+        pos: usize,
+        size: usize,
+        truncated_size: usize,
+        skew_delta: usize,
+        first: usize,
+    ) {
+        self.fft_ranged(data, pos, size, first..truncated_size, skew_delta);
+    }
+
     fn ifft(
         &self,
         data: &mut ShardsRefMut,
@@ -227,12 +239,28 @@ impl NoSimd {
         truncated_size: usize,
         skew_delta: usize,
     ) {
+        self.fft_ranged(data, pos, size, 0..truncated_size, skew_delta);
+    }
+
+    /// The FFT, valid on `data[pos + range.start .. pos + range.end]`: at
+    /// every layer, only the groups that overlap `range` are computed.
+    #[inline(always)]
+    fn fft_ranged(
+        &self,
+        data: &mut ShardsRefMut,
+        pos: usize,
+        size: usize,
+        range: core::ops::Range<usize>,
+        skew_delta: usize,
+    ) {
+        let truncated_size = range.end;
+
         // TWO LAYERS AT TIME
 
         let mut dist4 = size;
         let mut dist = size >> 2;
         while dist != 0 {
-            let mut r = 0;
+            let mut r = range.start / dist4 * dist4;
             while r < truncated_size {
                 let base = r + dist + skew_delta - 1;
 
@@ -255,7 +283,7 @@ impl NoSimd {
         // FINAL ODD LAYER
 
         if dist4 == 2 {
-            let mut r = 0;
+            let mut r = range.start / 2 * 2;
             while r < truncated_size {
                 let lut = self.factor(r + skew_delta);
                 let (x, y) = data.dist2_mut(pos + r, 1);

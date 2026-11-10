@@ -153,6 +153,19 @@ where
     // ============================================================
     // PROVIDED
 
+    /// Like [`RateEncoder::encode`], except that only the recovery shards
+    /// with indexes in `recovery` need to be valid in the result; the others
+    /// are unspecified. Encoders may skip work that only the others need.
+    ///
+    /// The provided implementation is [`RateEncoder::encode`].
+    fn encode_range(
+        &mut self,
+        recovery: core::ops::Range<usize>,
+    ) -> Result<EncoderResult<'_>, Error> {
+        let _ = recovery;
+        self.encode()
+    }
+
     /// Returns `true` if given `original_count` / `recovery_count`
     /// combination is supported.
     ///

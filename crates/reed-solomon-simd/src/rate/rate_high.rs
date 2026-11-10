@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ops::Range};
 
 use crate::{
     engine::{self, Engine, GF_MODULUS, GF_ORDER},
@@ -42,6 +42,10 @@ impl<E: Engine> RateEncoder<E> for HighRateEncoder<E> {
     }
 
     fn encode(&mut self) -> Result<EncoderResult<'_>, Error> {
+        self.encode_range(0..usize::MAX)
+    }
+
+    fn encode_range(&mut self, recovery: Range<usize>) -> Result<EncoderResult<'_>, Error> {
         let (mut work, original_count, recovery_count) = self.work.encode_begin()?;
         let chunk_size = recovery_count.next_power_of_two();
         let engine = &self.engine;
@@ -75,7 +79,9 @@ impl<E: Engine> RateEncoder<E> for HighRateEncoder<E> {
 
         // FFT
 
-        engine.fft(&mut work, 0, chunk_size, recovery_count, 0);
+        // Only the groups of the FFT that overlap `recovery` are computed.
+        let end = recovery.end.min(recovery_count);
+        engine.fft_from(&mut work, 0, chunk_size, end, 0, recovery.start.min(end));
 
         // UNDO LAST CHUNK ENCODING
 

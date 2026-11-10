@@ -4,8 +4,9 @@ Reed-Solomon erasure coding based on [Leopard-RS], featuring:
 
 - `O(n log n)` complexity.
 - Entirely written in Rust.
-- Portable SIMD through the `wide` crate on x86(-64) (SSSE3), AArch64 (Neon) and WebAssembly (`simd128`),
-selected at compile time from the enabled target features, with fallback to plain Rust.
+- Portable SIMD through the `wide` crate on x86(-64) (SSSE3, or AVX2 with 256-bit vectors), AArch64 (Neon)
+and WebAssembly (`simd128`), selected at compile time from the enabled target features, with fallback to
+plain Rust; and an AVX-512 (and GFNI) engine on x86-64.
 - Any combination of 1 - 32768 original shards with 1 - 32768 recovery shards.
 - Up to 65535 original or recovery shards is also possible with following limitations:
 
@@ -189,7 +190,14 @@ Use `cargo test -- --ignored` to run those.
 
 ## Safety
 
-This crate contains no `unsafe` code. SIMD is provided by the `wide` crate.
+Outside the x86-64 `Avx512` engine (`src/engine/engine_avx512.rs`), this crate contains no `unsafe`
+code: SIMD is provided by the `wide` crate. The `Avx512` engine uses `core::arch` intrinsics and can only
+be constructed once the CPU is known to support them.
+
+## License
+
+MIT, with the BSD-3-Clause notice of Leopard-RS (`LICENSE`), except `src/engine/engine_avx512.rs`, which
+is Apache-2.0 (`LICENSE-APACHE`).
 
 ## Compatibility
 

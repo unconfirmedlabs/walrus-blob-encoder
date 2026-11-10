@@ -1,4 +1,4 @@
-use core::{cmp::Ordering, marker::PhantomData};
+use core::{cmp::Ordering, marker::PhantomData, ops::Range};
 
 use crate::{
     engine::{Engine, GF_ORDER},
@@ -118,6 +118,14 @@ impl<E: Engine> RateEncoder<E> for DefaultRateEncoder<E> {
         match &mut self.0 {
             InnerEncoder::High(high) => high.encode(),
             InnerEncoder::Low(low) => low.encode(),
+            InnerEncoder::None => unreachable!(),
+        }
+    }
+
+    fn encode_range(&mut self, recovery: Range<usize>) -> Result<EncoderResult<'_>, Error> {
+        match &mut self.0 {
+            InnerEncoder::High(high) => high.encode_range(recovery),
+            InnerEncoder::Low(low) => low.encode_range(recovery),
             InnerEncoder::None => unreachable!(),
         }
     }

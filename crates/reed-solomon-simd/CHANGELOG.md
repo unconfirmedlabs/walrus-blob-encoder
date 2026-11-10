@@ -50,3 +50,17 @@
   on `Wide`.
 - Removed `examples/quick-comparison.rs` and the four crates it compared
   against.
+- `Avx512` engine (x86-64), moved here from walrus-blob-encoder: AVX-512F and
+  AVX-512BW with GFNI where available, constructed only when the CPU supports
+  it, statically or with the new `runtime-detection` feature at runtime. This
+  file is Apache-2.0 (`LICENSE-APACHE`); the crate is now
+  `MIT AND BSD-3-Clause AND Apache-2.0` and requires Rust 1.89.
+- `Wide` uses 256-bit vectors when AVX2 is enabled at compile time.
+- `Wide::with_skew_limit` / `Wide::for_encoder` and the same for `NoSimd`
+  build the multiplication tables of the skew factors an encoder uses (about
+  128 bytes each, 256 with AVX2) instead of the global 8 MiB tables;
+  `engine::utils::encoder_skew_limit` gives the limit for a shard count.
+- The encoder and decoder work areas are 64-byte aligned.
+- `RateEncoder::encode_range` and `Engine::fft_from`: an encode that needs only
+  some recovery shards skips the FFT groups only the others need (high rate)
+  or whole FFT chunks (low rate).

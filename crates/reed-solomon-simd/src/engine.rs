@@ -140,6 +140,25 @@ pub trait Engine {
     // ============================================================
     // PROVIDED
 
+    /// [`Engine::fft`] whose result needs to be valid only on
+    /// `data[pos + first .. pos + truncated_size]`: engines may skip the
+    /// butterfly groups of later layers that lie entirely below `first`,
+    /// leaving garbage in `data[pos .. pos + first]`.
+    ///
+    /// The provided implementation computes the whole [`Engine::fft`].
+    fn fft_from(
+        &self,
+        data: &mut ShardsRefMut,
+        pos: usize,
+        size: usize,
+        truncated_size: usize,
+        skew_delta: usize,
+        first: usize,
+    ) {
+        let _ = first;
+        self.fft(data, pos, size, truncated_size, skew_delta);
+    }
+
     /// Evaluate polynomial.
     fn eval_poly(erasures: &mut [GfElement; GF_ORDER], truncated_size: usize)
     where

@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ops::Range};
 
 use crate::{
     engine::{self, Engine, GF_MODULUS, GF_ORDER},
@@ -42,6 +42,10 @@ impl<E: Engine> RateEncoder<E> for LowRateEncoder<E> {
     }
 
     fn encode(&mut self) -> Result<EncoderResult<'_>, Error> {
+        self.encode_range(0..usize::MAX)
+    }
+
+    fn encode_range(&mut self, recovery: Range<usize>) -> Result<EncoderResult<'_>, Error> {
         let (mut work, original_count, recovery_count) = self.work.encode_begin()?;
         let chunk_size = original_count.next_power_of_two();
         let engine = &self.engine;
@@ -62,18 +66,21 @@ impl<E: Engine> RateEncoder<E> for LowRateEncoder<E> {
             chunk_start += chunk_size;
         }
 
-        // FFT - FULL CHUNKS
+        // FFT - FULL CHUNKS, skipping those outside `recovery`
 
+        let wanted = |start: usize| start < recovery.end && recovery.start < start + chunk_size;
         let mut chunk_start = 0;
         while chunk_start + chunk_size <= recovery_count {
-            engine::fft_skew_end(engine, &mut work, chunk_start, chunk_size, chunk_size);
+            if wanted(chunk_start) {
+                engine::fft_skew_end(engine, &mut work, chunk_start, chunk_size, chunk_size);
+            }
             chunk_start += chunk_size;
         }
 
         // FFT - FINAL PARTIAL CHUNK
 
         let last_count = recovery_count % chunk_size;
-        if last_count > 0 {
+        if last_count > 0 && wanted(chunk_start) {
             engine::fft_skew_end(engine, &mut work, chunk_start, chunk_size, last_count);
         }
 

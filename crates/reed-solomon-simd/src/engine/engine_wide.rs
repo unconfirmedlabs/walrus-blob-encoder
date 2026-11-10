@@ -36,8 +36,8 @@ use crate::engine::{
 #[derive(Clone)]
 pub struct Wide {
     skew: &'static Skew,
-    /// The table of `skew[i]`, for every position `i < by_position.len()`.
-    by_position: Box<[Multiply128lutT]>,
+    /// The tables of `skew[i]` in vector form, for every position `i < by_position.len()`.
+    by_position: Box<[Lut]>,
     /// The global table, for factors beyond `by_position` and for [`Engine::mul`].
     full: Option<&'static Mul128>,
     #[cfg(test)]
@@ -75,18 +75,19 @@ impl Wide {
         let skew = tables::get_skew();
         let tables::ExpLog { exp, log } = tables::get_exp_log();
         let limit = limit.min(skew.len());
-        let by_position: Vec<Multiply128lutT> = skew[..limit]
+        let by_position: Vec<Lut> = skew[..limit]
             .iter()
             .map(|&log_m| {
-                if log_m == GF_MODULUS {
-                    // Never looked up: a factor of zero is a plain `xor`.
+                // A factor of zero is never looked up: it is a plain `xor`.
+                let lut = if log_m == GF_MODULUS {
                     Multiply128lutT {
                         lo: [0; 4],
                         hi: [0; 4],
                     }
                 } else {
                     tables::mul128_lut(log_m, exp, log)
-                }
+                };
+                Lut::new(&lut)
             })
             .collect();
         Self {
@@ -107,20 +108,19 @@ impl Wide {
         Self::with_skew_limit(utils::encoder_skew_limit(original_count, recovery_count))
     }
 
-    /// The table of the skew factor at `position`, or `None` if the factor
-    /// is zero (`GF_MODULUS`).
+    /// The skew factor at `position`.
     #[inline(always)]
-    fn factor(&self, position: usize) -> Option<Lut> {
+    fn factor(&self, position: usize) -> Factor<'_> {
         let log_m = self.skew[position];
         if log_m == GF_MODULUS {
-            None
+            Factor::Zero
         } else if let Some(lut) = self.by_position.get(position) {
-            Some(Lut::new(lut))
+            Factor::Table(lut)
         } else {
             #[cfg(test)]
             assert!(!self.strict, "skew position {position} is past the tables");
             let full = self.full.unwrap_or_else(tables::get_mul128);
-            Some(Lut::new(&full[usize::from(log_m)]))
+            Factor::Owned(Lut::new(&full[usize::from(log_m)]))
         }
     }
 }
@@ -135,6 +135,18 @@ impl Engine for Wide {
         skew_delta: usize,
     ) {
         self.fft_private(data, pos, size, truncated_size, skew_delta);
+    }
+
+    fn fft_from(
+        &self,
+        data: &mut ShardsRefMut,
+        pos: usize,
+        size: usize,
+        truncated_size: usize,
+        skew_delta: usize,
+        first: usize,
+    ) {
+        self.fft_ranged(data, pos, size, first..truncated_size, skew_delta);
     }
 
     fn ifft(
@@ -246,7 +258,27 @@ fn high_nibbles(value: Vector, mask: Vector) -> Vector {
     cast::<u16x8, Vector>(cast::<Vector, u16x8>(value) >> 4_u32) & mask
 }
 
-/// The tables of one factor, broadcast to vectors once per butterfly group.
+/// A skew factor: zero, or its tables from [`Wide::with_skew_limit`] or
+/// built on the spot.
+enum Factor<'a> {
+    Zero,
+    Table(&'a Lut),
+    Owned(Lut),
+}
+
+impl Factor<'_> {
+    #[inline(always)]
+    fn lut(&self) -> Option<&Lut> {
+        match self {
+            Factor::Zero => None,
+            Factor::Table(lut) => Some(lut),
+            Factor::Owned(lut) => Some(lut),
+        }
+    }
+}
+
+/// The tables of one factor in vector form: with AVX2, each 16-byte table
+/// is stored broadcast to both 128-bit lanes, ready to load.
 #[derive(Clone, Copy)]
 struct Lut {
     lo: [Vector; 4],
@@ -357,19 +389,35 @@ impl Wide {
         truncated_size: usize,
         skew_delta: usize,
     ) {
+        self.fft_ranged(data, pos, size, 0..truncated_size, skew_delta);
+    }
+
+    /// The FFT, valid on `data[pos + range.start .. pos + range.end]`: at
+    /// every layer, only the groups that overlap `range` are computed.
+    #[inline(always)]
+    fn fft_ranged(
+        &self,
+        data: &mut ShardsRefMut,
+        pos: usize,
+        size: usize,
+        range: core::ops::Range<usize>,
+        skew_delta: usize,
+    ) {
+        let truncated_size = range.end;
+
         // TWO LAYERS AT TIME
 
         let mut dist4 = size;
         let mut dist = size >> 2;
         while dist != 0 {
-            let mut r = 0;
+            let mut r = range.start / dist4 * dist4;
             while r < truncated_size {
                 let base = r + dist + skew_delta - 1;
 
                 let lut01 = self.factor(base);
                 let lut02 = self.factor(base + dist);
                 let lut23 = self.factor(base + dist * 2);
-                let luts = [lut01.as_ref(), lut23.as_ref(), lut02.as_ref()];
+                let luts = [lut01.lut(), lut23.lut(), lut02.lut()];
 
                 for i in r..r + dist {
                     Self::fft_butterfly_two_layers(data, pos + i, dist, luts);
@@ -384,11 +432,11 @@ impl Wide {
         // FINAL ODD LAYER
 
         if dist4 == 2 {
-            let mut r = 0;
+            let mut r = range.start / 2 * 2;
             while r < truncated_size {
                 let lut = self.factor(r + skew_delta);
                 let (x, y) = data.dist2_mut(pos + r, 1);
-                Self::fft_butterfly(x, y, lut.as_ref());
+                Self::fft_butterfly(x, y, lut.lut());
                 r += 2;
             }
         }
@@ -459,7 +507,7 @@ impl Wide {
                 let lut01 = self.factor(base);
                 let lut02 = self.factor(base + dist);
                 let lut23 = self.factor(base + dist * 2);
-                let luts = [lut01.as_ref(), lut23.as_ref(), lut02.as_ref()];
+                let luts = [lut01.lut(), lut23.lut(), lut02.lut()];
 
                 for i in r..r + dist {
                     Self::ifft_butterfly_two_layers(data, pos + i, dist, luts);
@@ -474,7 +522,7 @@ impl Wide {
         // FINAL ODD LAYER
 
         if dist < size {
-            match self.factor(dist + skew_delta - 1) {
+            match self.factor(dist + skew_delta - 1).lut() {
                 None => utils::xor_within(data, pos + dist, pos, dist),
                 Some(lut) => {
                     let (mut a, mut b) = data.split_at_mut(pos + dist);
@@ -482,7 +530,7 @@ impl Wide {
                         Self::ifft_butterfly_partial(
                             &mut a[pos + i], // data[pos + i]
                             &mut b[i],       // data[pos + i + dist]
-                            &lut,
+                            lut,
                         );
                     }
                 }
@@ -575,6 +623,54 @@ mod tests {
         }
         let result = std::panic::catch_unwind(|| encode(strict(1407), &original[..334], 666));
         assert!(result.is_err(), "(334, 666) uses skew position 1407");
+    }
+
+    fn encode_range<E: Engine>(
+        engine: E,
+        original: &[Vec<u8>],
+        recovery_count: usize,
+        range: core::ops::Range<usize>,
+    ) -> Vec<Vec<u8>> {
+        let shard_bytes = original[0].len();
+        let mut encoder =
+            DefaultRateEncoder::new(original.len(), recovery_count, shard_bytes, engine, None)
+                .unwrap();
+        for shard in original {
+            encoder.add_original_shard(shard).unwrap();
+        }
+        let result = encoder.encode_range(range.clone()).unwrap();
+        range
+            .map(|i| result.recovery(i).unwrap().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn ranged_encoding_matches_full_encoding() {
+        let mut rng = ChaCha8Rng::from_seed([3; 32]);
+        for (original_count, recovery_count) in walrus_shapes() {
+            let limit = utils::encoder_skew_limit(original_count, recovery_count);
+            for shard_bytes in [2, 64, 66, 130] {
+                let original: Vec<Vec<u8>> = (0..original_count)
+                    .map(|_| (0..shard_bytes).map(|_| rng.random()).collect())
+                    .collect();
+                let expected = encode(NoSimd::new(), &original, recovery_count);
+                let r = recovery_count;
+                let mut ranges = vec![0..r, 0..1, r - 1..r, r / 2..r, 0..r / 2 + 1];
+                ranges.extend((0..6).map(|_| {
+                    let start = rng.random_range(0..r);
+                    start..rng.random_range(start + 1..=r)
+                }));
+                for range in ranges {
+                    let case =
+                        format!("({original_count}, {r}) x {shard_bytes}, recovery {range:?}");
+                    let want = &expected[range.clone()];
+                    let got = encode_range(strict(limit), &original, r, range.clone());
+                    assert_eq!(got, want, "Wide, {case}");
+                    let got = encode_range(NoSimd::new(), &original, r, range.clone());
+                    assert_eq!(got, want, "NoSimd, {case}");
+                }
+            }
+        }
     }
 
     #[test]
