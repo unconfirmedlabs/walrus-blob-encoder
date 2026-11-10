@@ -23,14 +23,18 @@ mod blake2b;
 mod blob_id;
 mod encoder;
 mod error;
+mod expansion;
 mod layout;
 mod merkle;
 mod messages;
 mod metadata;
 mod reed_solomon;
+pub mod stream;
 
 pub use blake2b::{Backend, ParseBackendError};
 pub use blob_id::{BlobId, ParseBlobIdError};
 pub use encoder::{BlobEncoder, MAINNET_N_SHARDS};
 pub use error::Error;
 pub use metadata::{BlobMetadata, EncodingType, SliverPairMetadata};
+pub use stream::{ReadRequest, SeekSource, Source, SourceError, StreamEncoder, StreamStats};
+

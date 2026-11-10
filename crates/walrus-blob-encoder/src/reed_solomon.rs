@@ -64,6 +64,19 @@ impl Encoder {
         }
     }
 
+    /// Makes the encoder encode `original` source into `recovery` recovery shards of
+    /// `shard_bytes` bytes, keeping its work space where the size allows.
+    pub(crate) fn reset(&mut self, original: usize, recovery: usize, shard_bytes: usize) {
+        const SHAPE: &str = "Reed-Solomon parameters are validated by the shard layout";
+        match self {
+            Encoder::Portable(encoder) => encoder.reset(original, recovery, shard_bytes),
+            Encoder::Simd(encoder) => encoder.reset(original, recovery, shard_bytes),
+            #[cfg(target_arch = "x86_64")]
+            Encoder::Avx512(encoder) => encoder.reset(original, recovery, shard_bytes),
+        }
+        .expect(SHAPE);
+    }
+
     /// Encodes exactly `original` shards of `shard_bytes` bytes each.
     pub(crate) fn encode<'s, 'a>(
         &'s mut self,

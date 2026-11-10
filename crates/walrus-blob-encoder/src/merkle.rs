@@ -1,7 +1,9 @@
 // Copyright (c) Unconfirmed Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Merkle roots of many equally sized trees, hashed level by level in one batch per level.
+//! Merkle roots of many equally sized trees, hashed level by level in one batch per level:
+//! either all leaves at once ([`roots`]) or leaf by leaf, every tree receiving its next leaf at
+//! the same time ([`Forest`]).
 //!
 //! Leaves are `BLAKE2b-256(0x00 || data)`, inner nodes `BLAKE2b-256(0x01 || left || right)`,
 //! and a level of odd length is completed with an all-zero node.
@@ -94,6 +96,99 @@ fn reduce(
     next_width
 }
 
+/// `n_trees` Merkle trees of `n_leaves` leaves each, built leaf by leaf.
+///
+/// Every call to [`Forest::push`] appends one leaf to every tree, so all trees have the same shape
+/// at all times and each completed pair of nodes, on any level, is hashed for all trees in one
+/// batch. Only one pending `left || right` pair per tree and level is kept: about
+/// `64 * n_trees * log2(n_leaves)` bytes.
+pub(crate) struct Forest {
+    n_trees: usize,
+    n_leaves: usize,
+    /// The number of nodes pushed to each level so far, the same for every tree.
+    pushed: Vec<usize>,
+    /// Per level, the pending pair of every tree; its left half is set at even positions.
+    pairs: Vec<Vec<[u8; 2 * DIGEST_LEN]>>,
+    hashed: Vec<Digest>,
+    messages: MessageBuf,
+}
+
+impl Forest {
+    pub(crate) fn new(n_trees: usize, n_leaves: usize) -> Self {
+        assert!(n_leaves > 0, "a tree has at least one leaf");
+        let levels = (usize::BITS - (n_leaves - 1).leading_zeros()) as usize + 1;
+        Forest {
+            n_trees,
+            n_leaves,
+            pushed: vec![0; levels],
+            pairs: vec![vec![[0; 2 * DIGEST_LEN]; n_trees]; levels],
+            hashed: vec![ZERO_NODE; n_trees],
+            messages: MessageBuf::default(),
+        }
+    }
+
+    /// The number of leaves pushed to every tree.
+    pub(crate) fn len(&self) -> usize {
+        self.pushed[0]
+    }
+
+    /// Appends `leaves[t]` to tree `t`, for every tree.
+    pub(crate) fn push(&mut self, hasher: Hasher, leaves: &[Digest]) {
+        assert!(self.len() < self.n_leaves, "too many leaves");
+        self.push_at(hasher, 0, Some(leaves));
+    }
+
+    /// Appends one node to every tree at `level`, hashing completed pairs upwards: `nodes`, or the
+    /// result of the previous level's hashes when `None`.
+    fn push_at(&mut self, hasher: Hasher, mut level: usize, mut nodes: Option<&[Digest]>) {
+        loop {
+            let index = self.pushed[level];
+            self.pushed[level] += 1;
+            let half = (index % 2) * DIGEST_LEN;
+            let source = nodes.take().unwrap_or(&self.hashed);
+            assert_eq!(source.len(), self.n_trees);
+            for (pair, node) in self.pairs[level].iter_mut().zip(source) {
+                pair[half..half + DIGEST_LEN].copy_from_slice(node);
+            }
+            if index.is_multiple_of(2) {
+                return;
+            }
+            let mut list = self.messages.take();
+            list.extend(
+                self.pairs[level]
+                    .iter()
+                    .map(<[u8; 2 * DIGEST_LEN]>::as_slice),
+            );
+            hasher.hash_batch(INNER_PREFIX, &list, &mut self.hashed);
+            self.messages.put(list);
+            level += 1;
+        }
+    }
+
+    /// Completes every tree, padding each level of odd length with an all-zero node, and writes
+    /// the root of tree `t` to `roots[t]`.
+    ///
+    /// # Panics
+    ///
+    /// If fewer than `n_leaves` leaves were pushed.
+    pub(crate) fn finish(mut self, hasher: Hasher, roots: &mut [Digest]) {
+        assert_eq!(self.len(), self.n_leaves, "missing leaves");
+        assert_eq!(roots.len(), self.n_trees);
+        let (mut level, mut width) = (0, self.n_leaves);
+        while width > 1 {
+            if width % 2 == 1 {
+                self.hashed.fill(ZERO_NODE);
+                self.push_at(hasher, level, None);
+            }
+            width = width.div_ceil(2);
+            level += 1;
+        }
+        for (root, pair) in roots.iter_mut().zip(&self.pairs[level]) {
+            root.copy_from_slice(&pair[..DIGEST_LEN]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use blake2::{Blake2b, Digest as _, digest::consts::U32};
@@ -140,6 +235,16 @@ mod tests {
                         got, expected,
                         "{backend}: {n_trees} trees of {n_leaves} leaves"
                     );
+
+                    let mut forest = Forest::new(n_trees, n_leaves);
+                    for leaf in 0..n_leaves {
+                        let column: Vec<Digest> =
+                            (0..n_trees).map(|t| leaves[t * n_leaves + leaf]).collect();
+                        forest.push(hasher, &column);
+                    }
+                    let mut got = vec![ZERO_NODE; n_trees];
+                    forest.finish(hasher, &mut got);
+                    assert_eq!(got, expected, "{backend}: forest of {n_trees} x {n_leaves}");
                 }
             }
         }

@@ -13,17 +13,27 @@
 //! Every output slot is written by exactly one task, so the result does not depend on the
 //! number of threads or the backend.
 
-use std::{num::NonZeroU16, sync::Arc};
+use std::num::NonZeroU16;
+#[cfg(feature = "rayon")]
+use std::sync::Arc;
 
+#[cfg(feature = "rayon")]
 use rayon::{ThreadPool, prelude::*};
 
 use crate::{
-    Backend, BlobId, BlobMetadata, EncodingType, Error, SliverPairMetadata,
-    blake2b::{DIGEST_LEN, Digest, Hasher},
+    Backend, BlobId, BlobMetadata, Error,
+    blake2b::Hasher,
+    expansion::Expansion,
     layout::{MessageMatrix, Rows, ShardLayout},
+    reed_solomon::Engine,
+};
+#[cfg(feature = "rayon")]
+use crate::{
+    blake2b::{DIGEST_LEN, Digest},
+    expansion,
     merkle::{self, LEAF_PREFIX, TreeScratch},
     messages::MessageBuf,
-    reed_solomon::{Encoder, Engine},
+    reed_solomon::Encoder,
 };
 
 /// Number of shards of Walrus mainnet.
@@ -31,8 +41,10 @@ pub const MAINNET_N_SHARDS: NonZeroU16 = NonZeroU16::new(1000).unwrap();
 
 /// Merkle trees reduced together per task, so that the narrow top levels still fill the SIMD
 /// lanes of the hasher.
+#[cfg(feature = "rayon")]
 const TREES_PER_TASK: usize = 16;
 
+#[cfg(feature = "rayon")]
 const ZERO_NODE: Digest = [0; DIGEST_LEN];
 
 /// Computes Walrus blob IDs and blob metadata for a fixed number of shards.
@@ -53,6 +65,7 @@ pub struct BlobEncoder {
     n_shards: NonZeroU16,
     layout: ShardLayout,
     hasher: Hasher,
+    #[cfg(feature = "rayon")]
     pool: Option<Arc<ThreadPool>>,
 }
 
@@ -69,6 +82,7 @@ impl BlobEncoder {
             n_shards,
             layout,
             hasher: Hasher::new(Backend::detect()).expect("the detected backend is available"),
+            #[cfg(feature = "rayon")]
             pool: None,
         })
     }
@@ -95,6 +109,7 @@ impl BlobEncoder {
         Ok(self)
     }
 
+    #[cfg(feature = "rayon")]
     /// Runs the computations on `pool` instead of the current rayon pool.
     pub fn with_thread_pool(mut self, pool: Arc<ThreadPool>) -> Self {
         self.pool = Some(pool);
@@ -161,14 +176,22 @@ impl BlobEncoder {
     pub fn metadata(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
         let len = blob.len() as u64;
         let symbol_size = usize::from(self.symbol_size(len)?.get());
-        let compute = || self.compute(blob, symbol_size);
-        Ok(match &self.pool {
-            Some(pool) => pool.install(compute),
-            None => compute(),
-        })
+        #[cfg(feature = "rayon")]
+        {
+            let compute = || self.compute(blob, symbol_size);
+            Ok(match &self.pool {
+                Some(pool) => pool.install(compute),
+                None => compute(),
+            })
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            let _ = symbol_size;
+            self.metadata_sequential(blob)
+        }
     }
 
-    fn engine(&self) -> Engine {
+    pub(crate) fn engine(&self) -> Engine {
         match self.hasher.backend() {
             Backend::Scalar => Engine::Portable,
             #[cfg(target_arch = "x86_64")]
@@ -177,6 +200,40 @@ impl BlobEncoder {
         }
     }
 
+    pub(crate) fn hasher(&self) -> Hasher {
+        self.hasher
+    }
+
+    pub(crate) fn layout(&self) -> ShardLayout {
+        self.layout
+    }
+
+    /// The metadata of `blob` computed column by column on the calling thread, with the expanded
+    /// rows of the parity columns as the only buffer.
+    #[doc(hidden)]
+    pub fn metadata_sequential(&self, blob: &[u8]) -> Result<BlobMetadata, Error> {
+        let len = blob.len() as u64;
+        let s = usize::from(self.symbol_size(len)?.get());
+        let layout = self.layout;
+        let (rows, cols, f) = (layout.n_rows, layout.n_cols, layout.n_faulty);
+        let matrix = MessageMatrix::new(blob, &layout, s);
+        let mut expansion = Expansion::new(self.hasher, self.engine(), layout, s, None);
+        for col in 0..cols {
+            expansion.push_column(matrix.rows().column(col, s));
+        }
+        let mut recovery = vec![0; rows * f * s];
+        for (row, out) in recovery.chunks_exact_mut(f * s).enumerate() {
+            expansion.encode_row(matrix.row(row), 0..f, out);
+        }
+        drop(matrix);
+        let recovery_rows = Rows::new(&recovery, f * s);
+        for col in 0..f {
+            expansion.push_column(recovery_rows.column(col, s));
+        }
+        Ok(expansion.finish(len))
+    }
+
+    #[cfg(feature = "rayon")]
     fn compute(&self, blob: &[u8], symbol_size: usize) -> BlobMetadata {
         let layout = self.layout;
         let n = layout.n_shards;
@@ -202,7 +259,7 @@ impl BlobEncoder {
 
         let (primary, secondary) = sliver_roots(self.hasher, &leaves, n);
         drop(leaves);
-        finish(self.hasher, &primary, &secondary, blob.len() as u64)
+        expansion::metadata(self.hasher, &primary, &secondary, blob.len() as u64)
     }
 }
 
@@ -213,6 +270,7 @@ impl Default for BlobEncoder {
     }
 }
 
+#[cfg(feature = "rayon")]
 /// Parameters shared by the encoding phases.
 #[derive(Clone, Copy)]
 struct Schedule {
@@ -222,6 +280,7 @@ struct Schedule {
     symbol_size: usize,
 }
 
+#[cfg(feature = "rayon")]
 impl Schedule {
     /// Writes the `f` recovery symbols of every row of the message matrix to `recovery`, row
     /// major.
@@ -273,6 +332,7 @@ impl Schedule {
     }
 }
 
+#[cfg(feature = "rayon")]
 /// Merkle roots of the rows (primary slivers) and columns of the column-major leaf matrix.
 fn sliver_roots(hasher: Hasher, leaves: &[Digest], n: usize) -> (Vec<Digest>, Vec<Digest>) {
     let mut row_roots = vec![ZERO_NODE; n];
@@ -309,48 +369,6 @@ fn sliver_roots(hasher: Hasher, leaves: &[Digest], n: usize) -> (Vec<Digest>, Ve
         },
     );
     (row_roots, column_roots)
-}
-
-/// Builds the metadata from the row roots and column roots; sliver pair `i` holds row `i` and
-/// column `n - 1 - i`.
-fn finish(
-    hasher: Hasher,
-    row_roots: &[Digest],
-    column_roots: &[Digest],
-    unencoded_length: u64,
-) -> BlobMetadata {
-    let pairs: Vec<[Digest; 2]> = row_roots
-        .iter()
-        .zip(column_roots.iter().rev())
-        .map(|(&primary, &secondary)| [primary, secondary])
-        .collect();
-    let messages: Vec<&[u8]> = pairs.iter().map(|pair| pair.as_flattened()).collect();
-    let mut pair_leaves = vec![ZERO_NODE; pairs.len()];
-    hasher.hash_batch(LEAF_PREFIX, &messages, &mut pair_leaves);
-
-    let mut root = [ZERO_NODE];
-    let mut scratch = TreeScratch::default();
-    merkle::roots(hasher, &pair_leaves, pairs.len(), &mut root, &mut scratch);
-
-    let encoding_type = EncodingType::RS2;
-    let mut preimage = [0; 8 + DIGEST_LEN];
-    preimage[..8].copy_from_slice(&unencoded_length.to_le_bytes());
-    preimage[8..].copy_from_slice(&root[0]);
-    let mut blob_id = [ZERO_NODE];
-    hasher.hash_batch(encoding_type.into(), &[&preimage], &mut blob_id);
-
-    BlobMetadata {
-        blob_id: BlobId::from(blob_id[0]),
-        encoding_type,
-        unencoded_length,
-        sliver_pairs: pairs
-            .into_iter()
-            .map(|[primary_hash, secondary_hash]| SliverPairMetadata {
-                primary_hash,
-                secondary_hash,
-            })
-            .collect(),
-    }
 }
 
 #[cfg(test)]

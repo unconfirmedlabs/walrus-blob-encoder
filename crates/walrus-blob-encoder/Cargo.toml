@@ -12,11 +12,12 @@ categories = ["cryptography", "encoding"]
 publish = false
 
 [features]
-default = ["runtime-detection"]
+default = ["rayon", "runtime-detection"]
+rayon = ["dep:rayon"]
 runtime-detection = ["reed-solomon-simd/runtime-detection"]
 
 [dependencies]
-rayon = "1.11"
+rayon = { version = "1.11", optional = true }
 reed-solomon-simd = { path = "../reed-solomon-simd" }
 
 [dev-dependencies]
@@ -29,6 +30,11 @@ walrus-core = { git = "https://github.com/MystenLabs/walrus.git", rev = "c377852
 name = "encoder"
 harness = false
 test = false
+required-features = ["rayon"]
+
+[[example]]
+name = "bench"
+required-features = ["rayon"]
 
 [lints.rust]
 missing_docs = "warn"
