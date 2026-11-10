@@ -2460,8 +2460,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-core"
-version = "1.50.0"
-source = "git+https://github.com/MystenLabs/walrus.git?rev=c377852712d30a23031c04d07dc13bf5e20a92de#c377852712d30a23031c04d07dc13bf5e20a92de"
+version = "1.61.0"
+source = "git+https://github.com/MystenLabs/walrus.git?rev=d6c6d3c59ab0cd9e5abd7be96c7133d056de4c84#d6c6d3c59ab0cd9e5abd7be96c7133d056de4c84"
 dependencies = [
  "base64 0.22.1",
  "bcs",
@@ -2470,7 +2470,6 @@ dependencies = [
  "hex",
  "p256",
  "rand 0.8.8",
- "rayon",
  "reed-solomon-simd 3.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_with",
