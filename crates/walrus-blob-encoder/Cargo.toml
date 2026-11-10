@@ -13,7 +13,7 @@ publish = false
 
 [features]
 default = ["runtime-detection"]
-runtime-detection = []
+runtime-detection = ["reed-solomon-simd/runtime-detection"]
 
 [dependencies]
 rayon = "1.11"

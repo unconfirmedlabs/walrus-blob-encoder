@@ -3,8 +3,6 @@
 
 //! Reed-Solomon encoders with a selectable `reed-solomon-simd` engine.
 
-#[cfg(target_arch = "x86_64")]
-mod avx512;
 #[cfg(test)]
 mod tests;
 
@@ -23,8 +21,8 @@ pub(crate) fn supports(original: usize, recovery: usize) -> bool {
 /// enables SSSE3, WebAssembly `simd128` or NEON, otherwise [`NoSimd`].
 type SimdEngine = engine::DefaultEngine;
 
-/// Engine choice: portable code only, the best `reed-solomon-simd` engine, or this crate's
-/// AVX-512 engine where available. All engines produce identical recovery shards.
+/// Engine choice: portable code only, the compile-time SIMD engine, or the AVX-512 engine where
+/// available. All engines produce identical recovery shards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Engine {
     Portable,
@@ -37,7 +35,7 @@ pub(crate) enum Encoder {
     Portable(DefaultRateEncoder<NoSimd>),
     Simd(DefaultRateEncoder<SimdEngine>),
     #[cfg(target_arch = "x86_64")]
-    Avx512(DefaultRateEncoder<avx512::Avx512>),
+    Avx512(DefaultRateEncoder<engine::Avx512>),
 }
 
 impl Encoder {
@@ -58,7 +56,7 @@ impl Encoder {
         match engine {
             Engine::Portable => Encoder::Portable(rate_encoder(shape, NoSimd::new())),
             #[cfg(target_arch = "x86_64")]
-            Engine::Avx512 => match avx512::Avx512::new() {
+            Engine::Avx512 => match engine::Avx512::new() {
                 Some(engine) => Encoder::Avx512(rate_encoder(shape, engine)),
                 None => Self::new(Engine::Simd, original, recovery, shard_bytes),
             },

@@ -82,9 +82,10 @@ impl BlobEncoder {
     ///
     /// [`Backend::Scalar`] also selects the portable Reed-Solomon engine, giving a path free of
     /// explicit SIMD code that is several times slower for large blobs; [`Backend::Avx512`]
-    /// selects this crate's AVX-512 engine, with GFNI where available; the other backends use the
-    /// best engine of `reed-solomon-simd` up to AVX2. Without the `runtime-detection` feature,
-    /// engines are limited to the target's static features.
+    /// selects the AVX-512 engine of `reed-solomon-simd`, with GFNI where available; the other
+    /// backends use its `Wide` engine if the target enables SSSE3, `simd128` or NEON at compile
+    /// time, and the portable engine otherwise. Only the AVX-512 engine is detected at runtime,
+    /// with the `runtime-detection` feature.
     ///
     /// # Errors
     ///

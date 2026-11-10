@@ -17,6 +17,11 @@
 //! - [`Wide`]
 //!     - Optimized engine using portable 128-bit SIMD: SSSE3 on x86(-64),
 //!       `simd128` on WebAssembly, Neon on `AArch64`.
+//! - [`Avx512`] (x86-64 only)
+//!     - Engine using AVX-512F and AVX-512BW, with GFNI where available.
+//!       Constructed only if the CPU supports it: statically enabled target
+//!       features, or with the `runtime-detection` feature, detected at runtime.
+//!       Never chosen by [`DefaultEngine`].
 //! - [`DefaultEngine`]
 //!     - Default engine which is used when no specific engine is given.
 //!     - [`Wide`] when the build enables one of those target features,
@@ -35,6 +40,11 @@ pub use self::{
     engine_default::DefaultEngine, engine_nosimd::NoSimd, engine_wide::Wide, shards::ShardsRefMut,
 };
 
+#[cfg(target_arch = "x86_64")]
+pub use self::engine_avx512::Avx512;
+
+#[cfg(target_arch = "x86_64")]
+mod engine_avx512;
 mod engine_default;
 mod engine_nosimd;
 mod engine_wide;
